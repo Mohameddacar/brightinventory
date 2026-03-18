@@ -6,48 +6,43 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 const createCompany = async (data) => {
-  const {
-    company_name,
-    address,
-    contact,
-    email,
-    logo,
-  } = data;
-
   await prisma.$executeRaw`
-    CALL create_company(
-      ${data.company_name ?? null},
+    INSERT INTO companies (
+      company_name,
+      address,
+      contact,
+      email,
+      logo,
+      created_at,
+      updated_at
+    ) VALUES (
+      ${data.company_name},
       ${data.address ?? null},
       ${data.contact ?? null},
       ${data.email ?? null},
-      ${data.logo ?? null}
+      ${data.logo ?? null},
+      NOW(),
+      NOW()
     )
   `;
 };
 
 const updateCompany = async (id, data) => {
-  const {
-    company_name,
-    address,
-    contact,
-    email,
-    logo,
-  } = data;
-
   await prisma.$executeRaw`
-    CALL update_company(
-      ${Number(id)},
-      ${data.company_name ?? null},
-      ${data.address ?? null},
-      ${data.contact ?? null},
-      ${data.email ?? null},
-      ${data.logo ?? null}
-    )
+    UPDATE companies
+    SET
+      company_name = ${data.company_name},
+      address = ${data.address ?? null},
+      contact = ${data.contact ?? null},
+      email = ${data.email ?? null},
+      logo = ${data.logo ?? null},
+      updated_at = NOW()
+    WHERE id = ${Number(id)}
   `;
 };
 
 const deleteCompany = async (id) => {
-  await prisma.$executeRaw`CALL delete_company(${Number(id)})`;
+  await prisma.$executeRaw`DELETE FROM companies WHERE id = ${Number(id)}`;
 };
 
 const getAllCompanies = async () => {

@@ -6,36 +6,29 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 const createExpenseType = async (data) => {
-  const {
-    type_name,
-    created_at,
-  } = data;
-
   await prisma.$executeRaw`
-    CALL create_expense_type(
+    INSERT INTO expense_types (
+      type_name,
+      created_at
+    ) VALUES (
       ${data.type_name ?? null},
-      ${data.created_at ?? null}
+      ${data.created_at ? new Date(data.created_at) : new Date()}
     )
   `;
 };
 
 const updateExpenseType = async (id, data) => {
-  const {
-    type_name,
-    created_at,
-  } = data;
-
   await prisma.$executeRaw`
-    CALL update_expense_type(
-      ${Number(id)},
-      ${data.type_name ?? null},
-      ${data.created_at ?? null}
-    )
+    UPDATE expense_types
+    SET
+      type_name = ${data.type_name ?? null},
+      created_at = ${data.created_at ? new Date(data.created_at) : null}
+    WHERE id = ${Number(id)}
   `;
 };
 
 const deleteExpenseType = async (id) => {
-  await prisma.$executeRaw`CALL delete_expense_type(${Number(id)})`;
+  await prisma.$executeRaw`DELETE FROM expense_types WHERE id = ${Number(id)}`;
 };
 
 const getAllExpenseTypes = async () => {

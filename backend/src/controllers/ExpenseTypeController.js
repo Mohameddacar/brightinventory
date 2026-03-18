@@ -1,7 +1,35 @@
 const expenseTypeService = require('../services/ExpenseTypeServices');
 
+const TYPE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9\s&'().-]{1,118}$/;
+
+const validateExpenseTypePayload = (payload) => {
+	const errors = [];
+
+	if (!payload || typeof payload !== 'object') {
+		return ['Request payload is invalid'];
+	}
+
+	const typeName = String(payload.type_name || '').trim();
+	if (!typeName) {
+		errors.push('type_name is required');
+	} else if (!TYPE_NAME_PATTERN.test(typeName)) {
+		errors.push('type_name is invalid');
+	}
+
+	if (!payload.created_at || Number.isNaN(new Date(payload.created_at).getTime())) {
+		errors.push('created_at is required and must be a valid date');
+	}
+
+	return errors;
+};
+
 const createExpenseType = async (req, res) => {
 	try {
+		const validationErrors = validateExpenseTypePayload(req.body);
+		if (validationErrors.length > 0) {
+			return res.status(400).json({ message: validationErrors[0], errors: validationErrors });
+		}
+
 		await expenseTypeService.createExpenseType(req.body);
 		return res.status(201).json({ message: 'ExpenseType created successfully' });
 	} catch (error) {
@@ -11,7 +39,17 @@ const createExpenseType = async (req, res) => {
 
 const updateExpenseType = async (req, res) => {
 	try {
+		const validationErrors = validateExpenseTypePayload(req.body);
+		if (validationErrors.length > 0) {
+			return res.status(400).json({ message: validationErrors[0], errors: validationErrors });
+		}
+
 		const { id } = req.params;
+		const existing = await expenseTypeService.getExpenseTypeById(id);
+		if (!existing) {
+			return res.status(404).json({ message: 'ExpenseType not found' });
+		}
+
 		await expenseTypeService.updateExpenseType(id, req.body);
 		return res.status(200).json({ message: 'ExpenseType updated successfully' });
 	} catch (error) {
@@ -22,6 +60,11 @@ const updateExpenseType = async (req, res) => {
 const deleteExpenseType = async (req, res) => {
 	try {
 		const { id } = req.params;
+		const existing = await expenseTypeService.getExpenseTypeById(id);
+		if (!existing) {
+			return res.status(404).json({ message: 'ExpenseType not found' });
+		}
+
 		await expenseTypeService.deleteExpenseType(id);
 		return res.status(200).json({ message: 'ExpenseType deleted successfully' });
 	} catch (error) {

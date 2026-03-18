@@ -134,6 +134,38 @@ const getWarehouses = async (req, res) => {
   }
 };
 
+const createPurchasePayment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await purchaseService.createPurchasePayment(id, req.body || {});
+    return res.status(201).json({ message: 'Payment recorded successfully', ...result });
+  } catch (error) {
+    if (error.message === 'Purchase not found') {
+      return res.status(404).json({ message: error.message });
+    }
+
+    if (error.code === 'PAYMENT_COMPLETED' || error.code === 'OVERPAY' || error.code === 'INVALID_PAYMENT') {
+      return res.status(400).json({ message: error.message, ...(error.meta || {}) });
+    }
+
+    return res.status(500).json({ message: 'Failed to create purchase payment', error: error.message });
+  }
+};
+
+const getPurchasePayments = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await purchaseService.getPurchasePaymentsByPurchaseId(id);
+    return res.status(200).json(result);
+  } catch (error) {
+    if (error.message === 'Purchase not found') {
+      return res.status(404).json({ message: error.message });
+    }
+
+    return res.status(500).json({ message: 'Failed to fetch purchase payments', error: error.message });
+  }
+};
+
 module.exports = {
   createPurchase,
   updatePurchase,
@@ -142,4 +174,6 @@ module.exports = {
   getPurchase,
   getPurchaseItems,
   getWarehouses,
+  createPurchasePayment,
+  getPurchasePayments,
 };

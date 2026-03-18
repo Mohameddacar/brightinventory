@@ -31,6 +31,12 @@ const transactionClosingRoutes = require('./routes/transactionClosingRoutes');
 const cashDepositRoutes = require('./routes/cashDepositRoutes');
 const reportLogRoutes = require('./routes/reportLogRoutes');
 const auditLogRoutes = require('./routes/auditLogRoutes');
+const accessControlRoutes = require('./routes/accessControlRoutes');
+const communicationRoutes = require('./routes/communicationRoutes');
+const authRoutes = require('./routes/authRoutes');
+const accountRoutes = require('./routes/accountRoutes');
+const paymentMethodRoutes = require('./routes/paymentMethodRoutes');
+const transferRoutes = require('./routes/transferRoutes');
 
 const app = express();
 
@@ -77,8 +83,28 @@ app.use('/api', userRoutes);
 app.use('/api', roleRoutes);
 app.use('/api', permissionRoutes);
 app.use('/api', rolePermissionRoutes);
+app.use('/api', accessControlRoutes);
 app.use('/api', reportLogRoutes);
 app.use('/api', auditLogRoutes);
+app.use('/api', communicationRoutes);
+app.use('/api', authRoutes);
+app.use('/api', transferRoutes);
+app.use('/api', accountRoutes);
+app.use('/api', paymentMethodRoutes);
+
+app.use((req, res) => {
+  res.status(404).json({ message: `Cannot ${req.method} ${req.originalUrl}` });
+});
+
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({ message: 'Invalid JSON payload' });
+  }
+
+  const statusCode = Number(err?.status || err?.statusCode || 500);
+  const message = err?.message || 'Internal server error';
+  return res.status(statusCode).json({ message });
+});
 
 const PORT = process.env.PORT || 5000;
 

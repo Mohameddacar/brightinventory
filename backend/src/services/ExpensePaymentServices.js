@@ -6,67 +6,76 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 const createExpensePayment = async (data) => {
-  const {
-    expense_bill_id,
-    payment_mode,
-    cash,
-    amount,
-    remarks,
-    payment_date,
-  } = data;
-
   await prisma.$executeRaw`
-    CALL create_expense_payment(
-      ${data.expense_bill_id ?? null},
-      ${data.payment_mode ?? null},
-      ${data.cash ?? null},
-      ${data.amount ?? null},
+    INSERT INTO expense_payments (
+      expense_bill_id,
+      payment_mode,
+      cash,
+      amount,
+      remarks,
+      payment_date
+    ) VALUES (
+      ${Number(data.expense_bill_id)},
+      ${data.payment_mode},
+      ${Number(data.cash)},
+      ${Number(data.amount)},
       ${data.remarks ?? null},
-      ${data.payment_date ?? null}
+      ${new Date(data.payment_date)}
     )
   `;
 };
 
 const updateExpensePayment = async (id, data) => {
-  const {
-    expense_bill_id,
-    payment_mode,
-    cash,
-    amount,
-    remarks,
-    payment_date,
-  } = data;
-
   await prisma.$executeRaw`
-    CALL update_expense_payment(
-      ${Number(id)},
-      ${data.expense_bill_id ?? null},
-      ${data.payment_mode ?? null},
-      ${data.cash ?? null},
-      ${data.amount ?? null},
-      ${data.remarks ?? null},
-      ${data.payment_date ?? null}
-    )
+    UPDATE expense_payments
+    SET
+      expense_bill_id = ${Number(data.expense_bill_id)},
+      payment_mode = ${data.payment_mode},
+      cash = ${Number(data.cash)},
+      amount = ${Number(data.amount)},
+      remarks = ${data.remarks ?? null},
+      payment_date = ${new Date(data.payment_date)}
+    WHERE id = ${Number(id)}
   `;
 };
 
 const deleteExpensePayment = async (id) => {
-  await prisma.$executeRaw`CALL delete_expense_payment(${Number(id)})`;
+  await prisma.$executeRaw`DELETE FROM expense_payments WHERE id = ${Number(id)}`;
 };
 
 const getAllExpensePayments = async () => {
   return prisma.$queryRaw`
-    SELECT *
-    FROM expense_payments
-    ORDER BY id DESC
+    SELECT
+      ep.id,
+      ep.expense_bill_id,
+      ep.payment_mode,
+      ep.cash,
+      ep.amount,
+      ep.remarks,
+      ep.payment_date,
+      eb.receiver_name,
+      eb.invoice_date
+    FROM expense_payments ep
+    JOIN expense_bills eb ON eb.id = ep.expense_bill_id
+    ORDER BY ep.id DESC
   `;
 };
 
 const getExpensePaymentById = async (id) => {
   const rows = await prisma.$queryRaw`
-    SELECT *
-    FROM expense_payments
-    WHERE id = ${Number(id)}
+    SELECT
+      ep.id,
+      ep.expense_bill_id,
+      ep.payment_mode,
+      ep.cash,
+      ep.amount,
+      ep.remarks,
+      ep.payment_date,
+      eb.receiver_name,
+      eb.invoice_date
+    FROM expense_payments ep
+    JOIN expense_bills eb ON eb.id = ep.expense_bill_id
+    WHERE ep.id = ${Number(id)}
     LIMIT 1
   `;
 

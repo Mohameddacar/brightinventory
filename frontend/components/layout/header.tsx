@@ -1,11 +1,41 @@
+"use client"
+
+import * as React from "react"
+import { useRouter } from "next/navigation"
 import { BellIcon, PlusIcon, SearchIcon } from "lucide-react"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { SidebarTrigger } from "@/components/ui/sidebar"
+import { clearAuthSession, getStoredUserProfile } from "@/lib/auth"
 
 export function LayoutHeader() {
+  const router = useRouter()
+  const [profileName, setProfileName] = React.useState("User")
+  const [profileRole, setProfileRole] = React.useState("Staff")
+
+  React.useEffect(() => {
+    const loadProfile = () => {
+      const user = getStoredUserProfile()
+      if (user) {
+        setProfileName(user.name || "User")
+        setProfileRole(user.role_name || "Staff")
+      }
+    }
+
+    loadProfile()
+    window.addEventListener("ims-access-updated", loadProfile)
+    return () => {
+      window.removeEventListener("ims-access-updated", loadProfile)
+    }
+  }, [])
+
+  const logout = () => {
+    clearAuthSession()
+    router.replace("/")
+  }
+
   return (
     <header className="sticky top-0 z-20 flex h-(--header-height) shrink-0 items-center border-b bg-background/95 shadow-sm backdrop-blur">
       <div className="flex w-full items-center justify-between gap-3 px-4 lg:px-6">
@@ -31,14 +61,18 @@ export function LayoutHeader() {
             Quick Add
           </Button>
 
+          <Button variant="outline" className="rounded-xl" onClick={logout}>
+            Logout
+          </Button>
+
           <div className="flex items-center gap-2 rounded-xl border px-2 py-1.5 shadow-sm">
             <Avatar className="size-8">
               <AvatarImage src="/avatars/eng-dacar.png" alt="eng Dacar" />
-              <AvatarFallback>ED</AvatarFallback>
+              <AvatarFallback>{profileName.slice(0, 2).toUpperCase()}</AvatarFallback>
             </Avatar>
             <div className="hidden text-right leading-tight sm:block">
-              <p className="text-sm font-medium">eng Dacar</p>
-              <p className="text-xs text-muted-foreground">Admin Manager</p>
+              <p className="text-sm font-medium">{profileName}</p>
+              <p className="text-xs text-muted-foreground">{profileRole}</p>
             </div>
           </div>
         </div>

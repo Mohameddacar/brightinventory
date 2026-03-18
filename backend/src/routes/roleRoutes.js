@@ -1,7 +1,10 @@
 const express = require('express');
 const roleController = require('../controllers/RoleController');
+const { authMiddleware } = require('../middlewares/AuthMiddleware');
 
 const router = express.Router();
+
+router.use('/roles', authMiddleware);
 
 router.post('/roles', roleController.createRole);
 router.get('/roles', roleController.getRoles);

@@ -37,6 +37,7 @@ import {
   SparklesIcon,
   BoltIcon,
 } from "lucide-react"
+import { getUserEffectivePermissions } from "@/lib/api"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -56,6 +57,7 @@ type ModuleItem = {
   title: string
   url: string
   icon: React.ReactNode
+  requiredPermission?: string
 }
 
 type ModuleSection = {
@@ -72,6 +74,56 @@ const bottomLinks: ModuleItem[] = [
   { title: "Reports", url: "/dashboard/reports", icon: <FileBarChart2Icon /> },
   { title: "Settings", url: "/dashboard/settings", icon: <SettingsIcon /> },
 ]
+
+const ACTIVE_USER_STORAGE_KEY = "ims_active_user_id"
+
+const derivePermissionFromUrl = (url: string) => {
+  if (url === "/dashboard") {
+    return "dashboard.view"
+  }
+
+  if (!url.startsWith("/dashboard/")) {
+    return null
+  }
+
+  const slug = url.replace("/dashboard/", "").split("/")[0]?.trim()
+  if (!slug) {
+    return null
+  }
+
+  return `${slug}.view`
+}
+
+const normalizeModuleToken = (value: string) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "")
+
+const buildPermissionCandidates = (permissionName: string) => {
+  const raw = String(permissionName || "").trim().toLowerCase()
+  if (!raw.includes(".")) {
+    return [raw]
+  }
+
+  const [moduleName, action] = raw.split(".")
+  const moduleRaw = String(moduleName || "").trim().toLowerCase()
+  const tokens = new Set<string>([moduleRaw])
+
+  tokens.add(moduleRaw.replace(/-/g, "_"))
+  tokens.add(moduleRaw.replace(/_/g, "-"))
+  tokens.add(moduleRaw.replace(/[\s_-]+/g, ""))
+
+  if (moduleRaw.endsWith("s") && moduleRaw.length > 1) {
+    const singular = moduleRaw.slice(0, -1)
+    tokens.add(singular)
+    tokens.add(singular.replace(/-/g, "_"))
+    tokens.add(singular.replace(/_/g, "-"))
+    tokens.add(singular.replace(/[\s_-]+/g, ""))
+  }
+
+  return Array.from(tokens).map((token) => `${token}.${action}`)
+}
 
 const moduleSections: ModuleSection[] = [
   {
@@ -185,6 +237,36 @@ const moduleSections: ModuleSection[] = [
     ],
   },
   {
+    title: "Transfer",
+    icon: <ArrowRightLeftIcon />,
+    items: [
+      {
+        title: "All Transfers",
+        url: "/dashboard/transfers",
+        icon: <ArrowRightLeftIcon />,
+        requiredPermission: "transfers.view",
+      },
+    ],
+  },
+  {
+    title: "Accounting",
+    icon: <LandmarkIcon />,
+    items: [
+      {
+        title: "Accounts",
+        url: "/dashboard/accounts",
+        icon: <LandmarkIcon />,
+        requiredPermission: "accounts.view",
+      },
+      {
+        title: "Payment Methods",
+        url: "/dashboard/payment-methods",
+        icon: <CreditCardIcon />,
+        requiredPermission: "payment-methods.view",
+      },
+    ],
+  },
+  {
     title: "Company Profile",
     icon: <Building2Icon />,
     items: [
@@ -218,6 +300,99 @@ const moduleSections: ModuleSection[] = [
 
 export function LayoutSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname()
+  const [allowedPermissions, setAllowedPermissions] = React.useState<Set<string> | null>(null)
+  const [activeRoleName, setActiveRoleName] = React.useState<string>("")
+
+  const loadActiveUserPermissions = React.useCallback(async () => {
+    try {
+      const rawUserId = window.localStorage.getItem(ACTIVE_USER_STORAGE_KEY)
+      if (!rawUserId) {
+        setAllowedPermissions(null)
+        return
+      }
+
+      const userId = Number(rawUserId)
+      if (!Number.isFinite(userId) || userId <= 0) {
+        setAllowedPermissions(null)
+        return
+      }
+
+      const effective = await getUserEffectivePermissions(userId)
+      const permissionSet = new Set((effective.permission_names || []).map((item) => String(item).toLowerCase()))
+      setAllowedPermissions(permissionSet)
+      setActiveRoleName(String(effective.user?.role_name || ""))
+    } catch {
+      setAllowedPermissions(null)
+      setActiveRoleName("")
+    }
+  }, [])
+
+  React.useEffect(() => {
+    loadActiveUserPermissions()
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === ACTIVE_USER_STORAGE_KEY) {
+        loadActiveUserPermissions()
+      }
+    }
+
+    const handleAccessUpdate = () => {
+      loadActiveUserPermissions()
+    }
+
+    window.addEventListener("storage", handleStorage)
+    window.addEventListener("ims-access-updated", handleAccessUpdate)
+
+    return () => {
+      window.removeEventListener("storage", handleStorage)
+      window.removeEventListener("ims-access-updated", handleAccessUpdate)
+    }
+  }, [loadActiveUserPermissions])
+
+  const hasAccess = React.useCallback(
+    (item: ModuleItem) => {
+      const permissionName = item.requiredPermission || derivePermissionFromUrl(item.url)
+      if (!permissionName) {
+        return true
+      }
+
+      if (activeRoleName.toLowerCase() === "admin") {
+        return true
+      }
+
+      // No active user selected means unrestricted super-admin style browsing.
+      if (!allowedPermissions) {
+        return true
+      }
+
+      const candidates = buildPermissionCandidates(permissionName)
+      if (candidates.some((candidate) => allowedPermissions.has(candidate))) {
+        return true
+      }
+
+      const permissionModule = permissionName.split(".")[0] || ""
+      const normalizedModule = normalizeModuleToken(permissionModule)
+
+      return Array.from(allowedPermissions).some((granted) => {
+        const [grantedModule, grantedAction] = String(granted).toLowerCase().split(".")
+        return grantedAction === "view" && normalizeModuleToken(grantedModule) === normalizedModule
+      })
+    },
+    [activeRoleName, allowedPermissions],
+  )
+
+  const visibleSingleLinks = React.useMemo(() => singleLinks.filter((item) => hasAccess(item)), [hasAccess])
+  const visibleBottomLinks = React.useMemo(() => bottomLinks.filter((item) => hasAccess(item)), [hasAccess])
+  const visibleSections = React.useMemo(
+    () =>
+      moduleSections
+        .map((section) => ({
+          ...section,
+          items: section.items.filter((item) => hasAccess(item)),
+        }))
+        .filter((section) => section.items.length > 0),
+    [hasAccess],
+  )
 
   const [openSections, setOpenSections] = React.useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {}
@@ -266,7 +441,7 @@ export function LayoutSidebar({ ...props }: React.ComponentProps<typeof Sidebar>
 
       <SidebarContent className="px-2 py-3">
         <SidebarMenu>
-          {singleLinks.map((item) => (
+          {visibleSingleLinks.map((item) => (
             <SidebarMenuItem key={item.title}>
               <SidebarMenuButton
                 tooltip={item.title}
@@ -282,7 +457,7 @@ export function LayoutSidebar({ ...props }: React.ComponentProps<typeof Sidebar>
         </SidebarMenu>
 
         <SidebarMenu className="mt-2">
-          {moduleSections.map((section) => {
+          {visibleSections.map((section) => {
             const hasActiveChild = section.items.some((item) => pathname?.startsWith(item.url))
             const isOpen = openSections[section.title]
 
@@ -323,7 +498,7 @@ export function LayoutSidebar({ ...props }: React.ComponentProps<typeof Sidebar>
         </SidebarMenu>
 
         <SidebarMenu className="mt-2">
-          {bottomLinks.map((item) => (
+          {visibleBottomLinks.map((item) => (
             <SidebarMenuItem key={item.title}>
               <SidebarMenuButton
                 tooltip={item.title}

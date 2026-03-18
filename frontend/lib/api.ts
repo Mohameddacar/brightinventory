@@ -1,13 +1,30 @@
 const API_BASE_URL = "http://localhost:5000/api"
+const AUTH_TOKEN_STORAGE_KEY = "ims_auth_token"
+
+const getAuthToken = () => {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  const token = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)
+  if (token && token.trim()) {
+    return token.trim()
+  }
+
+  const sessionToken = window.sessionStorage.getItem(AUTH_TOKEN_STORAGE_KEY)
+  return sessionToken && sessionToken.trim() ? sessionToken.trim() : null
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const isFormData = options?.body instanceof FormData
+  const token = getAuthToken()
 
   let response: Response
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       headers: {
         ...(isFormData ? {} : { "Content-Type": "application/json" }),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(options?.headers ?? {}),
       },
       ...options,
@@ -21,6 +38,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     try {
       const raw = await response.text()
       if (raw?.trim()) {
+        const trimmed = raw.trim()
+        if (trimmed.startsWith("<!DOCTYPE html") || trimmed.startsWith("<html")) {
+          errorMessage = `Server returned an HTML error (${response.status}). Restart backend and try again.`
+          throw new Error(errorMessage)
+        }
         try {
           const parsed = JSON.parse(raw)
           errorMessage = parsed.message || raw
@@ -94,6 +116,133 @@ export type CustomerApiPayload = {
   registered_date: string
 }
 
+export type ExpenseTypeApiPayload = {
+  type_name: string
+  created_at: string
+}
+
+export type ExpenseBillApiPayload = {
+  expense_type_id: number
+  invoice_date: string
+  receiver_name: string
+  amount: number
+  remarks?: string | null
+}
+
+export type ExpensePaymentApiPayload = {
+  expense_bill_id: number
+  payment_mode: "Cash" | "Bank Transfer" | "Card" | "Mobile Banking" | "Cheque"
+  cash: number
+  amount: number
+  payment_date: string
+  remarks?: string | null
+}
+
+export type AccountApiPayload = {
+  account_name: string
+  account_number: string
+  opening_balance: number
+  currency: "USD" | "SOS"
+  remarks?: string | null
+}
+
+export type AccountUpdateApiPayload = {
+  account_name: string
+  remarks?: string | null
+}
+
+export type PaymentMethodApiPayload = {
+  type: string
+}
+
+export type TransferApiPayload = {
+  transfer_date: string
+  reference_no: string
+  from_warehouse_id: number
+  to_warehouse_id: number
+  total_products: number
+  grand_total: number
+  remarks?: string | null
+}
+
+export type WarehouseOption = {
+  id: number
+  warehouse_name: string
+  location?: string | null
+}
+
+export type PaginatedApiResponse<T> = {
+  data: T[]
+  pagination: {
+    page: number
+    limit: number
+    total: number
+    totalPages: number
+  }
+}
+
+export type CompanyApiPayload = {
+  company_name: string
+  address?: string | null
+  contact?: string | null
+  email?: string | null
+  logo?: string | null
+}
+
+export type PermissionCatalogItem = {
+  id: number
+  permission_name: string
+  label: string
+  selected?: boolean
+  source?: "role" | "user" | "none"
+}
+
+export type PermissionCatalogModule = {
+  module: string
+  permissions: PermissionCatalogItem[]
+}
+
+export type UserPermissionMatrixResponse = {
+  user: {
+    id: number
+    name: string
+    role_id: number
+    role_name: string
+  }
+  use_custom: boolean
+  modules: PermissionCatalogModule[]
+}
+
+export type RolePermissionMatrixResponse = {
+  role: {
+    id: number
+    role_name: string
+    description?: string | null
+  }
+  modules: PermissionCatalogModule[]
+}
+
+export type UserEffectivePermissionResponse = {
+  user: {
+    id: number
+    name: string
+    role_id: number
+    role_name: string
+  }
+  use_custom: boolean
+  permission_ids: number[]
+  permission_names: string[]
+}
+
+export type UserApiPayload = {
+  name: string
+  email: string
+  password?: string
+  role_id: number
+  phone?: string | null
+  status: boolean
+}
+
 export type PurchaseItemPayload = {
   product_id: number
   quantity: number
@@ -116,11 +265,86 @@ export type PurchaseCreatePayload = {
   items: PurchaseItemPayload[]
 }
 
+export type SaleItemPayload = {
+  product_id: number
+  quantity: number
+  unit_price: number
+  tax?: number
+  discount?: number
+}
+
+export type SaleCreatePayload = {
+  customer_id: number
+  warehouse_id: number
+  invoice_date: string
+  order_tax?: number
+  discount?: number
+  discount_type?: "fixed" | "percent"
+  shipping?: number
+  notes?: string | null
+  paid?: number
+  payment_mode?: string
+  invoice_no?: string | null
+  items: SaleItemPayload[]
+}
+
+export type SalePaymentPayload = {
+  payment_date: string
+  amount: number
+  payment_mode: string
+  account_name?: string | null
+  remarks?: string | null
+}
+
+export type PurchasePaymentPayload = {
+  payment_date: string
+  amount: number
+  payment_mode: string
+  account_name?: string | null
+  remarks?: string | null
+}
+
+export type SendEmailPayload = {
+  to: string
+  subject: string
+  html?: string
+  text?: string
+}
+
+export type SendSmsPayload = {
+  to: string
+  message: string
+}
+
+export type AuthLoginPayload = {
+  login: string
+  password: string
+}
+
+export type ForgotPasswordPayload = {
+  email: string
+}
+
+export type AuthUser = {
+  id: number
+  name: string
+  email: string
+  role_id: number
+  role_name: string
+  permissions: string[]
+}
+
+export type AuthLoginResponse = {
+  token: string
+  user: AuthUser
+}
+
 export type ProductSearchResult = {
   product_id: number
   product_name: string
   barcode: string | null
   cost_price: string | number
+  selling_price?: string | number
   current_stock: number
 }
 
@@ -154,6 +378,49 @@ export async function updatePurchase<T = unknown>(id: number, payload: PurchaseC
   })
 }
 
+export async function createPurchasePayment<T = unknown>(id: number, payload: PurchasePaymentPayload) {
+  return request<T>(`/purchases/${id}/payments`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getPurchasePayments<T = unknown>(id: number) {
+  return request<T>(`/purchases/${id}/payments`)
+}
+
+export async function sendEmail<T = unknown>(payload: SendEmailPayload) {
+  return request<T>("/communications/email", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function sendSms<T = unknown>(payload: SendSmsPayload) {
+  return request<T>("/communications/sms", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function login(payload: AuthLoginPayload) {
+  return request<AuthLoginResponse>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getMySession() {
+  return request<{ user: AuthUser }>("/auth/me")
+}
+
+export async function requestPasswordReset(payload: ForgotPasswordPayload) {
+  return request<{ message: string }>("/auth/forgot-password", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
 export async function searchProducts(query: string) {
   const encoded = encodeURIComponent(query)
   return request<ProductSearchResult[]>(`/products/search?query=${encoded}`)
@@ -161,6 +428,49 @@ export async function searchProducts(query: string) {
 
 export async function getWarehouses<T = unknown>() {
   return request<T>("/warehouses")
+}
+
+export async function getSales<T = unknown>() {
+  return request<T>("/sales")
+}
+
+export async function getSaleById<T = unknown>(id: number) {
+  return request<T>(`/sales/${id}`)
+}
+
+export async function getSaleItemsBySaleId<T = unknown>(id: number) {
+  return request<T>(`/sales/${id}/items`)
+}
+
+export async function createSale<T = unknown>(payload: SaleCreatePayload) {
+  return request<T>("/sales", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateSale<T = unknown>(id: number, payload: SaleCreatePayload) {
+  return request<T>(`/sales/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteSale<T = unknown>(id: number) {
+  return request<T>(`/sales/${id}`, {
+    method: "DELETE",
+  })
+}
+
+export async function createSalePayment<T = unknown>(id: number, payload: SalePaymentPayload) {
+  return request<T>(`/sales/${id}/payments`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getSalePayments<T = unknown>(id: number) {
+  return request<T>(`/sales/${id}/payments`)
 }
 
 export async function createProduct<T = unknown>(payload: ProductApiPayload) {
@@ -290,5 +600,288 @@ export async function updateCustomer<T = unknown>(id: number, payload: CustomerA
 export async function deleteCustomer<T = unknown>(id: number) {
   return request<T>(`/customers/${id}`, {
     method: "DELETE",
+  })
+}
+
+export async function getExpenseTypes<T = unknown>() {
+  return request<T>("/expense-types")
+}
+
+export async function createExpenseType<T = unknown>(payload: ExpenseTypeApiPayload) {
+  return request<T>("/expense-types", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateExpenseType<T = unknown>(id: number, payload: ExpenseTypeApiPayload) {
+  return request<T>(`/expense-types/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteExpenseType<T = unknown>(id: number) {
+  return request<T>(`/expense-types/${id}`, {
+    method: "DELETE",
+  })
+}
+
+export async function getExpenses<T = unknown>() {
+  return request<T>("/expenses")
+}
+
+export async function createExpense<T = unknown>(payload: ExpenseBillApiPayload) {
+  return request<T>("/expenses", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateExpense<T = unknown>(id: number, payload: ExpenseBillApiPayload) {
+  return request<T>(`/expenses/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteExpense<T = unknown>(id: number) {
+  return request<T>(`/expenses/${id}`, {
+    method: "DELETE",
+  })
+}
+
+export async function getExpensePayments<T = unknown>() {
+  return request<T>("/expense-payments")
+}
+
+export async function createExpensePayment<T = unknown>(payload: ExpensePaymentApiPayload) {
+  return request<T>("/expense-payments", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateExpensePayment<T = unknown>(id: number, payload: ExpensePaymentApiPayload) {
+  return request<T>(`/expense-payments/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteExpensePayment<T = unknown>(id: number) {
+  return request<T>(`/expense-payments/${id}`, {
+    method: "DELETE",
+  })
+}
+
+export async function getAccounts<T = unknown>(params?: { search?: string; page?: number; limit?: number }) {
+  const searchParams = new URLSearchParams()
+
+  if (params?.search?.trim()) {
+    searchParams.set("search", params.search.trim())
+  }
+
+  if (Number.isFinite(params?.page)) {
+    searchParams.set("page", String(params?.page))
+  }
+
+  if (Number.isFinite(params?.limit)) {
+    searchParams.set("limit", String(params?.limit))
+  }
+
+  const query = searchParams.toString()
+  return request<T>(`/accounts${query ? `?${query}` : ""}`)
+}
+
+export async function createAccount<T = unknown>(payload: AccountApiPayload) {
+  return request<T>("/accounts", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateAccount<T = unknown>(id: number, payload: AccountUpdateApiPayload) {
+  return request<T>(`/accounts/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteAccount<T = unknown>(id: number) {
+  return request<T>(`/accounts/${id}`, {
+    method: "DELETE",
+  })
+}
+
+export async function getPaymentMethods<T = unknown>(params?: { search?: string; page?: number; limit?: number }) {
+  const searchParams = new URLSearchParams()
+
+  if (params?.search?.trim()) {
+    searchParams.set("search", params.search.trim())
+  }
+
+  if (Number.isFinite(params?.page)) {
+    searchParams.set("page", String(params?.page))
+  }
+
+  if (Number.isFinite(params?.limit)) {
+    searchParams.set("limit", String(params?.limit))
+  }
+
+  const query = searchParams.toString()
+  return request<T>(`/payment-methods${query ? `?${query}` : ""}`)
+}
+
+export async function createPaymentMethod<T = unknown>(payload: PaymentMethodApiPayload) {
+  return request<T>("/payment-methods", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updatePaymentMethod<T = unknown>(id: number, payload: PaymentMethodApiPayload) {
+  return request<T>(`/payment-methods/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deletePaymentMethod<T = unknown>(id: number) {
+  return request<T>(`/payment-methods/${id}`, {
+    method: "DELETE",
+  })
+}
+
+export async function getTransfers<T = unknown>(params?: { search?: string; page?: number; limit?: number }) {
+  const searchParams = new URLSearchParams()
+
+  if (params?.search?.trim()) {
+    searchParams.set("search", params.search.trim())
+  }
+
+  if (Number.isFinite(params?.page)) {
+    searchParams.set("page", String(params?.page))
+  }
+
+  if (Number.isFinite(params?.limit)) {
+    searchParams.set("limit", String(params?.limit))
+  }
+
+  const query = searchParams.toString()
+  return request<T>(`/transfers${query ? `?${query}` : ""}`)
+}
+
+export async function getTransferWarehouses<T = WarehouseOption[]>() {
+  return request<T>("/transfers/warehouses")
+}
+
+export async function createTransfer<T = unknown>(payload: TransferApiPayload) {
+  return request<T>("/transfers", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteTransfer<T = unknown>(id: number) {
+  return request<T>(`/transfers/${id}`, {
+    method: "DELETE",
+  })
+}
+
+export async function getCompanies<T = unknown>() {
+  return request<T>("/companies")
+}
+
+export async function getCompanyById<T = unknown>(id: number) {
+  return request<T>(`/companies/${id}`)
+}
+
+export async function createCompany<T = unknown>(payload: CompanyApiPayload) {
+  return request<T>("/companies", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateCompany<T = unknown>(id: number, payload: CompanyApiPayload) {
+  return request<T>(`/companies/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function uploadCompanyLogo(file: File) {
+  const formData = new FormData()
+  formData.append("image", file)
+
+  return request<{ message: string; image: string; image_url: string }>("/companies/upload-logo", {
+    method: "POST",
+    body: formData,
+  })
+}
+
+export async function getUsers<T = unknown>() {
+  return request<T>("/users")
+}
+
+export async function createUser<T = unknown>(payload: UserApiPayload) {
+  return request<T>("/users", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateUser<T = unknown>(id: number, payload: UserApiPayload) {
+  return request<T>(`/users/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteUser<T = unknown>(id: number) {
+  return request<T>(`/users/${id}`, {
+    method: "DELETE",
+  })
+}
+
+export async function getRoles<T = unknown>() {
+  return request<T>("/roles")
+}
+
+export async function getPermissionCatalog() {
+  return request<{ modules: PermissionCatalogModule[] }>("/access-control/catalog")
+}
+
+export async function getUserPermissionMatrix(userId: number) {
+  return request<UserPermissionMatrixResponse>(`/access-control/users/${userId}/permissions`)
+}
+
+export async function saveUserPermissions(userId: number, permissionIds: number[], useCustom = true) {
+  return request<{ message: string }>(`/access-control/users/${userId}/permissions`, {
+    method: "PUT",
+    body: JSON.stringify({ permission_ids: permissionIds, use_custom: useCustom }),
+  })
+}
+
+export async function getUserEffectivePermissions(userId: number) {
+  return request<UserEffectivePermissionResponse>(`/access-control/users/${userId}/effective-permissions`)
+}
+
+export async function getRolePermissionMatrix(roleId: number) {
+  return request<RolePermissionMatrixResponse>(`/access-control/roles/${roleId}/permissions`)
+}
+
+export async function saveRolePermissions(roleId: number, permissionIds: number[]) {
+  return request<{ message: string }>(`/access-control/roles/${roleId}/permissions`, {
+    method: "PUT",
+    body: JSON.stringify({ permission_ids: permissionIds }),
+  })
+}
+
+export async function createModulePermissions(module: string, actions: string[]) {
+  return request<{ message: string }>("/access-control/catalog/modules", {
+    method: "POST",
+    body: JSON.stringify({ module, actions }),
   })
 }

@@ -1,8 +1,11 @@
 "use client"
 
+import * as React from "react"
+
 import { AppSidebar } from "@/components/app-sidebar"
 import { LayoutFooter } from "@/components/layout/footer"
 import { SiteHeader } from "@/components/site-header"
+import { getUserEffectivePermissions } from "@/lib/api"
 import { Badge } from "@/components/ui/badge"
 import {
   Card,
@@ -48,6 +51,8 @@ import {
 } from "lucide-react"
 import type { CSSProperties } from "react"
 import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, XAxis } from "recharts"
+
+const ACTIVE_USER_STORAGE_KEY = "ims_active_user_id"
 
 const analyticsCards = [
   {
@@ -170,6 +175,52 @@ const recentActivity = [
 ]
 
 export default function Page() {
+  const [allowedPermissions, setAllowedPermissions] = React.useState<Set<string> | null>(null)
+
+  React.useEffect(() => {
+    const loadPermissions = async () => {
+      try {
+        const rawUserId = window.localStorage.getItem(ACTIVE_USER_STORAGE_KEY)
+        if (!rawUserId) {
+          setAllowedPermissions(null)
+          return
+        }
+
+        const userId = Number(rawUserId)
+        if (!Number.isFinite(userId) || userId <= 0) {
+          setAllowedPermissions(null)
+          return
+        }
+
+        const effective = await getUserEffectivePermissions(userId)
+        setAllowedPermissions(new Set((effective.permission_names || []).map((item) => String(item).toLowerCase())))
+      } catch {
+        setAllowedPermissions(null)
+      }
+    }
+
+    loadPermissions()
+
+    const handleAccessUpdate = () => {
+      loadPermissions()
+    }
+
+    window.addEventListener("ims-access-updated", handleAccessUpdate)
+    return () => {
+      window.removeEventListener("ims-access-updated", handleAccessUpdate)
+    }
+  }, [])
+
+  const hasPermission = (permissionName: string) => {
+    if (!allowedPermissions) {
+      return true
+    }
+    return allowedPermissions.has(permissionName.toLowerCase())
+  }
+
+  const canViewDashboard = hasPermission("dashboard.view")
+  const canViewAnalytics = hasPermission("analytics.view")
+
   return (
     <SidebarProvider
       style={
@@ -186,6 +237,15 @@ export default function Page() {
       <SidebarInset>
         <SiteHeader />
         <div className="flex flex-1 flex-col px-4 py-4 md:gap-6 md:px-6 md:py-6">
+          {!canViewDashboard ? (
+            <Card>
+              <CardContent className="py-12 text-center text-sm text-muted-foreground">
+                You do not have permission to view dashboard analytics.
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {canViewDashboard && canViewAnalytics ? (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
             {analyticsCards.map((card) => (
               <Card key={card.title} className="shadow-sm">
@@ -205,7 +265,9 @@ export default function Page() {
               </Card>
             ))}
           </div>
+          ) : null}
 
+          {canViewDashboard ? (
           <div className="grid gap-4 lg:grid-cols-12">
             <Card className="lg:col-span-7">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -285,7 +347,9 @@ export default function Page() {
               </CardContent>
             </Card>
           </div>
+          ) : null}
 
+          {canViewDashboard ? (
           <div className="grid gap-4 lg:grid-cols-12">
             <Card className="lg:col-span-8">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -341,6 +405,7 @@ export default function Page() {
               </CardContent>
             </Card>
           </div>
+          ) : null}
 
           <LayoutFooter />
         </div>

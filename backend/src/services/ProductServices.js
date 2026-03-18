@@ -144,6 +144,7 @@ const searchProducts = async (query) => {
 			p.product_name,
 			COALESCE(NULLIF(p.product_barcode, ''), p.product_code) AS barcode,
 			COALESCE(p.cost_price, p.purchase_cost) AS cost_price,
+			COALESCE(p.selling_price, p.sale_cost) AS selling_price,
 			COALESCE(p.current_stock, p.opening_quantity, 0) AS current_stock
 		FROM products p
 		WHERE

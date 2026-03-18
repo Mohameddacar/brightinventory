@@ -131,3 +131,14 @@
 [data-sonner-toaster] {
   z-index: 100000;
 }
+
+[data-slot="dialog-content"] label {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+[data-slot="dialog-content"] input,
+[data-slot="dialog-content"] textarea,
+[data-slot="dialog-content"] [data-slot="select-trigger"] {
+  font-size: 0.97rem;
+}

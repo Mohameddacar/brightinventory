@@ -4,8 +4,10 @@ const purchaseController = require('../controllers/PurchaseController');
 const router = express.Router();
 
 router.post('/purchases', purchaseController.createPurchase);
+router.post('/purchases/:id/payments', purchaseController.createPurchasePayment);
 router.get('/warehouses', purchaseController.getWarehouses);
 router.get('/purchases', purchaseController.getPurchases);
+router.get('/purchases/:id/payments', purchaseController.getPurchasePayments);
 router.get('/purchases/:id/items', purchaseController.getPurchaseItems);
 router.get('/purchases/:id', purchaseController.getPurchase);
 router.put('/purchases/:id', purchaseController.updatePurchase);

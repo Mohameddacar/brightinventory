@@ -52,4 +52,11 @@ export const appNotify = {
   failed(action: string, message: string) {
     show(`${action} failed.`, message, "error")
   },
+  completed(entity: string, message?: string) {
+    const entityLabel = entity.trim().toLowerCase()
+    show(`${entity} completed successfully.`, message || `${entityLabel} workflow completed successfully.`, "success")
+  },
+  info(title: string, message: string) {
+    show(title, message, "update")
+  },
 }

@@ -40,16 +40,21 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
+  createPurchasePayment,
   createPurchase,
+  getCompanies,
   getPurchaseById,
   getPurchaseItemsByPurchaseId,
+  getPurchasePayments,
   getPurchases,
   getSuppliers,
   getWarehouses,
   searchProducts,
+  sendEmail,
   updatePurchase,
   type ProductSearchResult,
   type PurchaseCreatePayload,
+  type PurchasePaymentPayload,
 } from "@/lib/api"
 import { appNotify } from "@/lib/notify"
 import {
@@ -127,12 +132,45 @@ type ApiSupplier = {
   id: number
   full_name?: string
   supplier_name?: string
+  email?: string | null
+  mobile_no?: string | null
+  address?: string | null
 }
 
 type ApiWarehouse = {
   id: number
   warehouse_name: string
   location: string | null
+}
+
+type ApiCompany = {
+  id: number
+  company_name: string
+  address?: string | null
+  contact?: string | null
+  email?: string | null
+}
+
+type ApiPurchasePaymentRow = {
+  id: number
+  payment_date: string
+  reference: string
+  amount: string | number
+  payment_mode?: string
+  account_name?: string | null
+  remarks?: string | null
+}
+
+type ApiPurchasePaymentsResponse = {
+  purchase: {
+    id: number
+    transaction_number: string
+    grand_total: number
+    paid: number
+    due: number
+    status: "paid" | "partial" | "unpaid"
+  }
+  payments: ApiPurchasePaymentRow[]
 }
 
 type PurchaseActionKey =
@@ -198,6 +236,14 @@ const defaultPurchaseForm: PurchaseFormState = {
   discount_type: "fixed",
   shipping: "0",
   notes: "",
+}
+
+const defaultPaymentForm = {
+  payment_date: new Date().toISOString().slice(0, 16),
+  amount: "0",
+  payment_mode: "cash",
+  account_name: "Cash",
+  remarks: "",
 }
 
 function toNumber(value: string | number | null | undefined) {
@@ -277,6 +323,23 @@ export default function PurchasesPage() {
   const [editingPurchaseId, setEditingPurchaseId] = React.useState<number | null>(null)
   const [editSupplierLabel, setEditSupplierLabel] = React.useState("")
   const [editWarehouseLabel, setEditWarehouseLabel] = React.useState("")
+
+  const [isDetailOpen, setIsDetailOpen] = React.useState(false)
+  const [detailLoading, setDetailLoading] = React.useState(false)
+  const [detailError, setDetailError] = React.useState<string | null>(null)
+  const [purchaseDetail, setPurchaseDetail] = React.useState<ApiPurchaseDetail | null>(null)
+  const [detailSupplier, setDetailSupplier] = React.useState<ApiSupplier | null>(null)
+  const [detailCompany, setDetailCompany] = React.useState<ApiCompany | null>(null)
+
+  const [isPaymentOpen, setIsPaymentOpen] = React.useState(false)
+  const [paymentLoading, setPaymentLoading] = React.useState(false)
+  const [paymentPurchase, setPaymentPurchase] = React.useState<ApiPurchase | null>(null)
+  const [paymentForm, setPaymentForm] = React.useState(defaultPaymentForm)
+
+  const [isShowPaymentsOpen, setIsShowPaymentsOpen] = React.useState(false)
+  const [showPaymentsLoading, setShowPaymentsLoading] = React.useState(false)
+  const [showPaymentsError, setShowPaymentsError] = React.useState<string | null>(null)
+  const [showPaymentsData, setShowPaymentsData] = React.useState<ApiPurchasePaymentsResponse | null>(null)
 
   const searchCacheRef = React.useRef<Map<string, ProductSearchResult[]>>(new Map())
 
@@ -489,7 +552,331 @@ export default function PurchasesPage() {
     }
   }
 
+  const openPurchaseDetailModal = async (purchase: ApiPurchase) => {
+    setIsDetailOpen(true)
+    setDetailLoading(true)
+    setDetailError(null)
+
+    try {
+      const [details, suppliersList, companyList] = await Promise.all([
+        getPurchaseById<ApiPurchaseDetail>(purchase.id),
+        getSuppliers<ApiSupplier[]>(),
+        getCompanies<ApiCompany[]>(),
+      ])
+
+      setPurchaseDetail(details)
+
+      const safeSuppliers = Array.isArray(suppliersList) ? suppliersList : []
+      const safeCompanies = Array.isArray(companyList) ? companyList : []
+      const matchedSupplier = safeSuppliers.find((row) => row.id === details.supplier_id) || null
+
+      setDetailSupplier(matchedSupplier)
+      setDetailCompany(safeCompanies[0] || null)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to load purchase detail"
+      setDetailError(message)
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  const openPaymentModal = (purchase: ApiPurchase) => {
+    const due = toNumber(purchase.rest)
+    if (due <= 0) {
+      appNotify.completed("Payment", "Payment completed for this purchase.")
+      return
+    }
+
+    setPaymentPurchase(purchase)
+    setPaymentForm({
+      ...defaultPaymentForm,
+      amount: due.toFixed(2),
+    })
+    setIsPaymentOpen(true)
+  }
+
+  const submitPayment = async () => {
+    if (!paymentPurchase) {
+      return
+    }
+
+    const currentDue = toNumber(paymentPurchase.rest)
+    const amount = toNumber(paymentForm.amount)
+
+    if (currentDue <= 0) {
+      appNotify.completed("Payment", "Payment completed for this purchase.")
+      setIsPaymentOpen(false)
+      return
+    }
+
+    if (amount <= 0) {
+      appNotify.failed("Payment", "Amount must be greater than 0")
+      return
+    }
+
+    if (amount > currentDue) {
+      appNotify.failed("Payment", `Amount needed is ${currentDue.toFixed(2)}`)
+      return
+    }
+
+    setPaymentLoading(true)
+    try {
+      const payload: PurchasePaymentPayload = {
+        payment_date: new Date(paymentForm.payment_date).toISOString(),
+        amount,
+        payment_mode: paymentForm.payment_mode,
+        account_name: paymentForm.account_name || null,
+        remarks: paymentForm.remarks || null,
+      }
+
+      const response = await createPurchasePayment<{ status?: string; due?: number }>(paymentPurchase.id, payload)
+      await loadPurchases()
+
+      const remainingDue = Number(response?.due ?? Math.max(0, currentDue - amount))
+      const isCompleted = response?.status === "completed" || remainingDue <= 0
+
+      if (isCompleted) {
+        appNotify.completed("Payment", "Payment completed for this purchase.")
+      } else {
+        appNotify.info("Payment recorded", `Partial payment accepted. Remaining due: ${remainingDue.toFixed(2)}`)
+      }
+
+      setIsPaymentOpen(false)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to submit payment"
+      appNotify.failed("Payment", message)
+    } finally {
+      setPaymentLoading(false)
+    }
+  }
+
+  const openPurchasePrintWindow = (detail: ApiPurchaseDetail, company: ApiCompany | null, supplier: ApiSupplier | null) => {
+    const rowsHtml = (detail.items || [])
+      .map((item, index) => {
+        return `
+          <tr>
+            <td>${index + 1}</td>
+            <td>${item.product_name}</td>
+            <td>${item.barcode || "-"}</td>
+            <td>${Number(item.quantity || 0)}</td>
+            <td>${formatCurrency(item.unit_cost)}</td>
+            <td>${formatCurrency(item.discount)}</td>
+            <td>${formatCurrency(item.tax)}</td>
+            <td>${formatCurrency(item.subtotal)}</td>
+          </tr>
+        `
+      })
+      .join("")
+
+    const html = `
+      <!doctype html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>Purchase ${detail.transaction_number}</title>
+        <style>
+          body { font-family: Arial, sans-serif; color: #0f172a; margin: 24px; }
+          .header { display: flex; justify-content: space-between; margin-bottom: 24px; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+          .title { font-size: 22px; font-weight: 700; margin: 0; }
+          .sub { color: #475569; font-size: 12px; margin-top: 4px; }
+          .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 18px; }
+          .card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; }
+          .card h4 { margin: 0 0 6px 0; font-size: 13px; }
+          .card p { margin: 2px 0; font-size: 12px; }
+          table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+          th, td { border: 1px solid #cbd5e1; padding: 8px; font-size: 12px; text-align: left; }
+          th { background: #f8fafc; }
+          .totals { margin-top: 18px; margin-left: auto; width: 300px; border: 1px solid #cbd5e1; border-radius: 8px; }
+          .totals .row { display: flex; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid #e2e8f0; font-size: 12px; }
+          .totals .row:last-child { border-bottom: 0; }
+          .totals .strong { font-weight: 700; }
+          .due { color: #b91c1c; font-weight: 700; }
+          @media print { body { margin: 12px; } }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div>
+            <p class="title">Purchase Invoice</p>
+            <p class="sub">Reference: ${detail.transaction_number}</p>
+          </div>
+          <div style="text-align:right;">
+            <p style="margin:0; font-size:12px;"><strong>Date:</strong> ${new Date(detail.purchase_date).toLocaleString()}</p>
+            <p style="margin:2px 0 0 0; font-size:12px;"><strong>Warehouse:</strong> ${detail.warehouse_name || "main"}</p>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <h4>Supplier</h4>
+            <p>${supplier?.supplier_name || supplier?.full_name || detail.supplier_name || "-"}</p>
+            <p>${supplier?.email || "-"}</p>
+            <p>${supplier?.mobile_no || "-"}</p>
+            <p>${supplier?.address || "-"}</p>
+          </div>
+          <div class="card">
+            <h4>Company</h4>
+            <p>${company?.company_name || "-"}</p>
+            <p>${company?.email || "-"}</p>
+            <p>${company?.contact || "-"}</p>
+            <p>${company?.address || "-"}</p>
+          </div>
+          <div class="card">
+            <h4>Payment</h4>
+            <p><strong>Status:</strong> ${toNumber(detail.rest) <= 0 ? "Paid" : toNumber(detail.paid) > 0 ? "Partial" : "Unpaid"}</p>
+            <p><strong>Paid:</strong> ${formatCurrency(detail.paid)}</p>
+            <p><strong>Due:</strong> ${formatCurrency(detail.rest)}</p>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Product</th>
+              <th>Barcode</th>
+              <th>Qty</th>
+              <th>Unit Cost</th>
+              <th>Discount</th>
+              <th>Tax</th>
+              <th>Subtotal</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml || `<tr><td colspan="8" style="text-align:center;">No items</td></tr>`}
+          </tbody>
+        </table>
+
+        <div class="totals">
+          <div class="row"><span>Order Tax</span><span>${formatCurrency(detail.order_tax || 0)}</span></div>
+          <div class="row"><span>Discount</span><span>${formatCurrency(detail.discount || 0)}</span></div>
+          <div class="row"><span>Shipping</span><span>${formatCurrency(detail.shipping || 0)}</span></div>
+          <div class="row strong"><span>Grand Total</span><span>${formatCurrency(detail.grand_total)}</span></div>
+          <div class="row"><span>Paid</span><span>${formatCurrency(detail.paid)}</span></div>
+          <div class="row due"><span>Due</span><span>${formatCurrency(detail.rest)}</span></div>
+        </div>
+      </body>
+      </html>
+    `
+
+    const printWindow = window.open("", "_blank", "width=1000,height=800")
+    if (!printWindow) {
+      appNotify.failed("Download PDF", "Popup blocked. Allow popups and try again.")
+      return
+    }
+
+    printWindow.document.open()
+    printWindow.document.write(html)
+    printWindow.document.close()
+    printWindow.focus()
+
+    window.setTimeout(() => {
+      printWindow.print()
+    }, 300)
+  }
+
+  const downloadPurchasePdf = async (purchase: ApiPurchase) => {
+    try {
+      const [detail, supplierList, companyList] = await Promise.all([
+        getPurchaseById<ApiPurchaseDetail>(purchase.id),
+        getSuppliers<ApiSupplier[]>(),
+        getCompanies<ApiCompany[]>(),
+      ])
+
+      const supplier = (Array.isArray(supplierList) ? supplierList : []).find((row) => row.id === detail.supplier_id) || null
+      const company = (Array.isArray(companyList) ? companyList : [])[0] || null
+
+      openPurchasePrintWindow(detail, company, supplier)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to prepare purchase PDF"
+      appNotify.failed("Download PDF", message)
+    }
+  }
+
+  const openShowPaymentsModal = async (purchase: ApiPurchase) => {
+    setIsShowPaymentsOpen(true)
+    setShowPaymentsLoading(true)
+    setShowPaymentsError(null)
+    setShowPaymentsData(null)
+
+    try {
+      const result = await getPurchasePayments<ApiPurchasePaymentsResponse>(purchase.id)
+      setShowPaymentsData(result)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to load payments"
+      setShowPaymentsError(message)
+    } finally {
+      setShowPaymentsLoading(false)
+    }
+  }
+
+  const sendPurchaseEmail = async (purchase: ApiPurchase, supplierOverride?: ApiSupplier | null) => {
+    try {
+      const supplier = supplierOverride || (await getSuppliers<ApiSupplier[]>()).find((row) => row.id === purchase.supplier_id) || null
+      const recipient = supplier?.email?.trim()
+
+      if (!recipient) {
+        appNotify.failed("Send Email", "Supplier email is missing.")
+        return
+      }
+
+      const subject = `Purchase ${purchase.transaction_number}`
+      const text = [
+        `Purchase Reference: ${purchase.transaction_number}`,
+        `Supplier: ${supplier?.supplier_name || supplier?.full_name || purchase.supplier_name}`,
+        `Grand Total: ${formatCurrency(purchase.grand_total)}`,
+        `Paid: ${formatCurrency(purchase.paid)}`,
+        `Due: ${formatCurrency(purchase.rest)}`,
+      ].join("\n")
+
+      await sendEmail({
+        to: recipient,
+        subject,
+        text,
+      })
+
+      appNotify.completed("Send Email", `Email sent to ${recipient}.`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to send email"
+      appNotify.failed("Send Email", message)
+    }
+  }
+
+  const sendPurchaseSms = async (_purchase: ApiPurchase, _supplierOverride?: ApiSupplier | null) => {
+    appNotify.info("Send SMS", "SMS provider will be integrated later.")
+  }
+
   const handleActionClick = async (action: PurchaseAction, purchase: ApiPurchase) => {
+    if (action.key === "purchase-detail") {
+      await openPurchaseDetailModal(purchase)
+      return
+    }
+
+    if (action.key === "create-payment") {
+      openPaymentModal(purchase)
+      return
+    }
+
+    if (action.key === "show-payments") {
+      await openShowPaymentsModal(purchase)
+      return
+    }
+
+    if (action.key === "download-pdf") {
+      await downloadPurchasePdf(purchase)
+      return
+    }
+
+    if (action.key === "send-email") {
+      await sendPurchaseEmail(purchase)
+      return
+    }
+
+    if (action.key === "send-sms") {
+      await sendPurchaseSms(purchase)
+      return
+    }
+
     if (action.key === "edit-purchase") {
       await openEditModal(purchase)
       return
@@ -649,6 +1036,25 @@ export default function PurchasesPage() {
       setSubmitLoading(false)
     }
   }
+
+  const detailPaymentStatus = purchaseDetail ? getPaymentStatus(purchaseDetail) : null
+
+  const showPaymentsBadge = React.useMemo(() => {
+    if (!showPaymentsData?.purchase) {
+      return null
+    }
+
+    const status = showPaymentsData.purchase.status
+    if (status === "paid") {
+      return { label: "Paid", className: "bg-emerald-100 text-emerald-700" }
+    }
+
+    if (status === "partial") {
+      return { label: "Partial", className: "bg-blue-100 text-blue-700" }
+    }
+
+    return { label: "Unpaid", className: "bg-amber-100 text-amber-700" }
+  }, [showPaymentsData])
 
   return (
     <SidebarProvider
@@ -1123,6 +1529,345 @@ export default function PurchasesPage() {
             </Button>
             <Button type="button" className="bg-[#3FA3D3] text-white hover:bg-[#53b2df]" onClick={() => setIsActionOpen(false)}>
               Continue
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
+        <DialogContent className="max-h-[92vh] max-w-6xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Details Purchase</DialogTitle>
+            <DialogDescription>
+              Full purchase information with supplier, company, and purchased products.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5 p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                className="bg-emerald-500 text-white hover:bg-emerald-600"
+                onClick={async () => {
+                  if (!purchaseDetail) {
+                    appNotify.failed("Edit Purchase", "Purchase detail not loaded yet.")
+                    return
+                  }
+
+                  const basePurchase = purchases.find((row) => row.id === purchaseDetail.id)
+                  if (basePurchase) {
+                    setIsDetailOpen(false)
+                    await openEditModal(basePurchase)
+                  } else {
+                    appNotify.failed("Edit Purchase", "Purchase record not found in table.")
+                  }
+                }}
+              >
+                <PencilIcon className="mr-1 size-4" />
+                Edit Purchase
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                className="bg-[#3b82f6] text-white hover:bg-[#2563eb]"
+                onClick={async () => {
+                  if (!purchaseDetail) {
+                    appNotify.failed("Send Email", "Purchase detail not loaded yet.")
+                    return
+                  }
+
+                  await sendPurchaseEmail(purchaseDetail, detailSupplier)
+                }}
+              >
+                <MailIcon className="mr-1 size-4" />
+                Send Email
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                className="bg-[#3b82f6] text-white hover:bg-[#2563eb]"
+                onClick={async () => {
+                  if (!purchaseDetail) {
+                    appNotify.failed("Send SMS", "Purchase detail not loaded yet.")
+                    return
+                  }
+
+                  await sendPurchaseSms(purchaseDetail, detailSupplier)
+                }}
+              >
+                <MessageSquareIcon className="mr-1 size-4" />
+                Send SMS
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (!purchaseDetail) {
+                    appNotify.failed("Download PDF", "Purchase detail not loaded yet.")
+                    return
+                  }
+
+                  openPurchasePrintWindow(purchaseDetail, detailCompany, detailSupplier)
+                }}
+              >
+                <DownloadIcon className="mr-1 size-4" />
+                Download PDF
+              </Button>
+            </div>
+
+            {detailLoading ? <p className="text-sm text-muted-foreground">Loading purchase detail...</p> : null}
+            {detailError ? <p className="text-sm text-rose-600">{detailError}</p> : null}
+
+            {!detailLoading && !detailError && purchaseDetail ? (
+              <>
+                <div className="grid gap-4 md:grid-cols-3">
+                  <div className="rounded-lg border p-3">
+                    <p className="mb-2 text-sm font-semibold">Supplier Info</p>
+                    <p className="text-sm">{detailSupplier?.supplier_name || detailSupplier?.full_name || purchaseDetail.supplier_name || "-"}</p>
+                    <p className="text-sm text-muted-foreground">{detailSupplier?.email || "-"}</p>
+                    <p className="text-sm text-muted-foreground">{detailSupplier?.mobile_no || "-"}</p>
+                    <p className="text-sm text-muted-foreground">{detailSupplier?.address || "-"}</p>
+                  </div>
+
+                  <div className="rounded-lg border p-3">
+                    <p className="mb-2 text-sm font-semibold">Company Info</p>
+                    <p className="text-sm">{detailCompany?.company_name || "-"}</p>
+                    <p className="text-sm text-muted-foreground">{detailCompany?.email || "-"}</p>
+                    <p className="text-sm text-muted-foreground">{detailCompany?.contact || "-"}</p>
+                    <p className="text-sm text-muted-foreground">{detailCompany?.address || "-"}</p>
+                  </div>
+
+                  <div className="rounded-lg border p-3">
+                    <p className="mb-2 text-sm font-semibold">Purchase Info</p>
+                    <p className="text-sm">Reference: {purchaseDetail.transaction_number}</p>
+                    <p className="text-sm">
+                      Payment Status:{" "}
+                      {detailPaymentStatus ? (
+                        <span className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${detailPaymentStatus.className}`}>
+                          {detailPaymentStatus.label}
+                        </span>
+                      ) : "-"}
+                    </p>
+                    <p className="text-sm">Date: {new Date(purchaseDetail.purchase_date).toLocaleString()}</p>
+                    <p className="text-sm">Warehouse: {purchaseDetail.warehouse_name || "main"}</p>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border">
+                  <div className="border-b px-4 py-3 text-sm font-semibold">Order Summary</div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Product Name</TableHead>
+                        <TableHead>Net Unit Cost</TableHead>
+                        <TableHead>Quantity</TableHead>
+                        <TableHead>Unit Cost</TableHead>
+                        <TableHead>Discount</TableHead>
+                        <TableHead>Tax</TableHead>
+                        <TableHead>Subtotal</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {(purchaseDetail.items || []).map((item) => (
+                        <TableRow key={`${item.product_id}-${item.barcode || "nb"}`}>
+                          <TableCell>
+                            <div className="font-medium">{item.product_name}</div>
+                            <div className="text-xs text-muted-foreground">{item.barcode || "No barcode"}</div>
+                          </TableCell>
+                          <TableCell>{formatCurrency(item.unit_cost)}</TableCell>
+                          <TableCell>{item.quantity}</TableCell>
+                          <TableCell>{formatCurrency(item.unit_cost)}</TableCell>
+                          <TableCell>{formatCurrency(item.discount)}</TableCell>
+                          <TableCell>{formatCurrency(item.tax)}</TableCell>
+                          <TableCell className="font-medium">{formatCurrency(item.subtotal)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                <div className="ml-auto w-full max-w-sm rounded-lg border p-3 text-sm">
+                  <div className="flex items-center justify-between py-1"><span>Order Tax</span><span>{formatCurrency(purchaseDetail.order_tax || 0)}</span></div>
+                  <div className="flex items-center justify-between py-1"><span>Discount</span><span>{formatCurrency(purchaseDetail.discount || 0)}</span></div>
+                  <div className="flex items-center justify-between py-1"><span>Shipping</span><span>{formatCurrency(purchaseDetail.shipping || 0)}</span></div>
+                  <div className="flex items-center justify-between py-1 font-semibold"><span>Grand Total</span><span>{formatCurrency(purchaseDetail.grand_total)}</span></div>
+                  <div className="flex items-center justify-between py-1"><span>Paid</span><span>{formatCurrency(purchaseDetail.paid)}</span></div>
+                  <div className="flex items-center justify-between py-1 text-rose-600"><span>Due</span><span>{formatCurrency(purchaseDetail.rest)}</span></div>
+                </div>
+              </>
+            ) : null}
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsDetailOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isPaymentOpen} onOpenChange={setIsPaymentOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Create Payment</DialogTitle>
+            <DialogDescription>
+              {paymentPurchase
+                ? `Record payment for ${paymentPurchase.transaction_number}`
+                : "Select a purchase first."}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 p-2">
+            <div className="rounded-md border p-3 text-sm">
+              <div className="flex items-center justify-between"><span>Grand Total</span><span>{formatCurrency(paymentPurchase?.grand_total || 0)}</span></div>
+              <div className="flex items-center justify-between"><span>Paid</span><span>{formatCurrency(paymentPurchase?.paid || 0)}</span></div>
+              <div className="flex items-center justify-between font-semibold text-rose-600"><span>Due</span><span>{formatCurrency(paymentPurchase?.rest || 0)}</span></div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Date</label>
+              <Input
+                type="datetime-local"
+                value={paymentForm.payment_date}
+                onChange={(e) => setPaymentForm((prev) => ({ ...prev, payment_date: e.target.value }))}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Amount</label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={paymentForm.amount}
+                onChange={(e) => setPaymentForm((prev) => ({ ...prev, amount: e.target.value }))}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Payment Mode</label>
+              <Select
+                value={paymentForm.payment_mode}
+                onValueChange={(value) => setPaymentForm((prev) => ({ ...prev, payment_mode: value || "cash" }))}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="bank">Bank</SelectItem>
+                  <SelectItem value="mobile">Mobile</SelectItem>
+                  <SelectItem value="card">Card</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Account</label>
+              <Input
+                value={paymentForm.account_name}
+                onChange={(e) => setPaymentForm((prev) => ({ ...prev, account_name: e.target.value }))}
+                placeholder="Cash / Account Name"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Remarks</label>
+              <Input
+                value={paymentForm.remarks}
+                onChange={(e) => setPaymentForm((prev) => ({ ...prev, remarks: e.target.value }))}
+                placeholder="Optional remark"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsPaymentOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" className="bg-[#3FA3D3] text-white hover:bg-[#53b2df]" onClick={submitPayment} disabled={paymentLoading}>
+              {paymentLoading ? "Saving..." : "Submit Payment"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isShowPaymentsOpen} onOpenChange={setIsShowPaymentsOpen}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>Show Payments</DialogTitle>
+            <DialogDescription>
+              Payment history for selected purchase.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 p-2">
+            {showPaymentsLoading ? <p className="text-sm text-muted-foreground">Loading payments...</p> : null}
+            {showPaymentsError ? <p className="text-sm text-rose-600">{showPaymentsError}</p> : null}
+
+            {!showPaymentsLoading && !showPaymentsError && showPaymentsData ? (
+              <>
+                <div className="rounded-lg border p-3 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="font-medium">Reference: {showPaymentsData.purchase.transaction_number}</p>
+                      <p className="text-muted-foreground">Grand Total: {formatCurrency(showPaymentsData.purchase.grand_total)}</p>
+                    </div>
+                    <div className="text-right">
+                      {showPaymentsBadge ? (
+                        <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${showPaymentsBadge.className}`}>
+                          {showPaymentsBadge.label}
+                        </span>
+                      ) : null}
+                      <p className="mt-1">Paid: {formatCurrency(showPaymentsData.purchase.paid)}</p>
+                      <p className="font-semibold text-rose-600">Due: {formatCurrency(showPaymentsData.purchase.due)}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="overflow-hidden rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Date</TableHead>
+                        <TableHead>Reference</TableHead>
+                        <TableHead>Payment Mode</TableHead>
+                        <TableHead>Account</TableHead>
+                        <TableHead>Amount</TableHead>
+                        <TableHead>Remarks</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {showPaymentsData.payments.length > 0 ? (
+                        showPaymentsData.payments.map((row) => (
+                          <TableRow key={row.id}>
+                            <TableCell>{new Date(row.payment_date).toLocaleString()}</TableCell>
+                            <TableCell>{row.reference}</TableCell>
+                            <TableCell>{row.payment_mode || "cash"}</TableCell>
+                            <TableCell>{row.account_name || "-"}</TableCell>
+                            <TableCell className="font-medium">{formatCurrency(row.amount)}</TableCell>
+                            <TableCell>{row.remarks || "-"}</TableCell>
+                          </TableRow>
+                        ))
+                      ) : (
+                        <TableRow>
+                          <TableCell colSpan={6} className="py-6 text-center text-sm text-muted-foreground">
+                            No payment records yet.
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </>
+            ) : null}
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsShowPaymentsOpen(false)}>
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

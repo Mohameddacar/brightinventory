@@ -5,6 +5,11 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
+const toNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
 let purchaseSchemaReady = false;
 
 const ensurePurchaseSchema = async () => {
@@ -88,6 +93,19 @@ const ensurePurchaseSchema = async () => {
     ALTER TABLE purchase_items ADD COLUMN IF NOT EXISTS subtotal NUMERIC(18,2);
     ALTER TABLE purchase_items ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
     ALTER TABLE purchase_items ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+    CREATE TABLE IF NOT EXISTS purchase_payments (
+      id SERIAL PRIMARY KEY,
+      purchase_id INTEGER NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+      payment_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      payment_mode VARCHAR(50) NOT NULL DEFAULT 'cash',
+      account_name VARCHAR(120),
+      amount NUMERIC(18,2) NOT NULL,
+      remarks TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_purchase_payments_purchase_id ON purchase_payments (purchase_id);
 
     UPDATE purchase_items
     SET
@@ -593,6 +611,137 @@ const getWarehouses = async () => {
   `;
 };
 
+const createPurchasePayment = async (id, paymentData) => {
+  await ensurePurchaseSchema();
+
+  const purchaseId = Number(id);
+  const amount = toNumber(paymentData.amount, 0);
+
+  if (amount <= 0) {
+    const error = new Error('Payment amount must be greater than 0');
+    error.code = 'INVALID_PAYMENT';
+    throw error;
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const purchaseRows = await tx.$queryRaw`
+      SELECT id, transaction_number, supplier_id, grand_total, paid, rest
+      FROM purchases
+      WHERE id = ${purchaseId}
+      LIMIT 1
+    `;
+
+    if (!Array.isArray(purchaseRows) || purchaseRows.length === 0) {
+      throw new Error('Purchase not found');
+    }
+
+    const purchase = purchaseRows[0];
+    const currentDue = toNumber(purchase.rest, 0);
+
+    if (currentDue <= 0) {
+      const error = new Error('Payment completed for this purchase');
+      error.code = 'PAYMENT_COMPLETED';
+      throw error;
+    }
+
+    if (amount > currentDue) {
+      const error = new Error(`Amount exceeds due. Needed amount is ${currentDue.toFixed(2)}`);
+      error.code = 'OVERPAY';
+      error.meta = { due: currentDue };
+      throw error;
+    }
+
+    const nextPaid = toNumber(purchase.paid, 0) + amount;
+    const nextRest = Math.max(0, toNumber(purchase.grand_total, 0) - nextPaid);
+
+    await tx.$executeRaw`
+      UPDATE purchases
+      SET
+        paid = ${nextPaid},
+        rest = ${nextRest},
+        payment_mode = ${String(paymentData.payment_mode || 'cash')},
+        cash_amount = ${nextPaid},
+        updated_at = NOW()
+      WHERE id = ${purchaseId}
+    `;
+
+    await tx.$executeRaw`
+      INSERT INTO purchase_payments (
+        purchase_id,
+        payment_date,
+        payment_mode,
+        account_name,
+        amount,
+        remarks,
+        created_at
+      ) VALUES (
+        ${purchaseId},
+        ${paymentData.payment_date ? new Date(paymentData.payment_date) : new Date()},
+        ${String(paymentData.payment_mode || 'cash')},
+        ${paymentData.account_name ? String(paymentData.account_name) : null},
+        ${amount},
+        ${paymentData.remarks ? String(paymentData.remarks) : null},
+        NOW()
+      )
+    `;
+
+    return {
+      purchase_id: purchaseId,
+      transaction_number: String(purchase.transaction_number),
+      paid: nextPaid,
+      due: nextRest,
+      status: nextRest <= 0 ? 'completed' : 'partial',
+    };
+  });
+};
+
+const getPurchasePaymentsByPurchaseId = async (id) => {
+  await ensurePurchaseSchema();
+
+  const purchaseId = Number(id);
+  const purchaseRows = await prisma.$queryRaw`
+    SELECT id, transaction_number, supplier_id, grand_total, paid, rest, created_at
+    FROM purchases
+    WHERE id = ${purchaseId}
+    LIMIT 1
+  `;
+
+  if (!Array.isArray(purchaseRows) || purchaseRows.length === 0) {
+    throw new Error('Purchase not found');
+  }
+
+  const purchase = purchaseRows[0];
+
+  const paymentRows = await prisma.$queryRaw`
+    SELECT
+      pp.id,
+      pp.purchase_id,
+      pp.payment_date,
+      CONCAT('REF/PUR-', p.transaction_number) AS reference,
+      pp.payment_mode,
+      pp.account_name,
+      pp.amount,
+      pp.remarks,
+      pp.created_at
+    FROM purchase_payments pp
+    JOIN purchases p ON p.id = pp.purchase_id
+    WHERE pp.purchase_id = ${purchaseId}
+    ORDER BY pp.payment_date DESC, pp.id DESC
+  `;
+
+  return {
+    purchase: {
+      id: Number(purchase.id),
+      transaction_number: String(purchase.transaction_number),
+      grand_total: toNumber(purchase.grand_total, 0),
+      paid: toNumber(purchase.paid, 0),
+      due: toNumber(purchase.rest, 0),
+      status: toNumber(purchase.rest, 0) <= 0 ? 'paid' : toNumber(purchase.paid, 0) > 0 ? 'partial' : 'unpaid',
+    },
+    payments: paymentRows,
+  };
+};
+
 module.exports = {
   createPurchase,
   updatePurchase,
@@ -601,6 +750,8 @@ module.exports = {
   getPurchaseById,
   getPurchaseItemsByPurchaseId,
   getWarehouses,
+  createPurchasePayment,
+  getPurchasePaymentsByPurchaseId,
   ensurePurchaseSchema,
 };
 

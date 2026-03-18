@@ -9,7 +9,13 @@ const createExpense = async (expenseData) => {
   const { expense_type_id, invoice_date, receiver_name, amount, remarks } = expenseData;
 
   await prisma.$executeRaw`
-    CALL create_expense(
+    INSERT INTO expense_bills (
+      expense_type_id,
+      invoice_date,
+      receiver_name,
+      amount,
+      remarks
+    ) VALUES (
       ${Number(expense_type_id)},
       ${new Date(invoice_date)},
       ${receiver_name},
@@ -23,19 +29,19 @@ const updateExpense = async (id, expenseData) => {
   const { expense_type_id, invoice_date, receiver_name, amount, remarks } = expenseData;
 
   await prisma.$executeRaw`
-    CALL update_expense(
-      ${Number(id)},
-      ${Number(expense_type_id)},
-      ${new Date(invoice_date)},
-      ${receiver_name},
-      ${Number(amount)},
-      ${remarks ?? null}
-    )
+    UPDATE expense_bills
+    SET
+      expense_type_id = ${Number(expense_type_id)},
+      invoice_date = ${new Date(invoice_date)},
+      receiver_name = ${receiver_name},
+      amount = ${Number(amount)},
+      remarks = ${remarks ?? null}
+    WHERE id = ${Number(id)}
   `;
 };
 
 const deleteExpense = async (id) => {
-  await prisma.$executeRaw`CALL delete_expense(${Number(id)})`;
+  await prisma.$executeRaw`DELETE FROM expense_bills WHERE id = ${Number(id)}`;
 };
 
 const getAllExpenses = async () => {

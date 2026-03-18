@@ -324,6 +324,23 @@ model expense_payments {
   expense_bill expense_bills @relation(fields: [expense_bill_id], references: [id])
 }
 
+model accounts {
+  id              Int      @id @default(autoincrement())
+  account_name    String
+  account_number  String   @unique
+  opening_balance Decimal  @default(0)
+  balance         Decimal  @default(0)
+  currency        String   @default("USD")
+  remarks         String?
+  created_at      DateTime @default(now())
+}
+
+model payment_methods {
+  id         Int      @id @default(autoincrement())
+  type       String   @unique
+  created_at DateTime @default(now())
+}
+
 model stock_adjustments {
   id              Int            @id @default(autoincrement())
   product_id      Int

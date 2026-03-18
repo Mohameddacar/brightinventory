@@ -9,7 +9,9 @@
     "dev": "nodemon src/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
-    "prisma:seed": "prisma db seed"
+    "prisma:seed": "prisma db seed",
+    "db:backup": "powershell -ExecutionPolicy Bypass -File ./scripts/backup-db.ps1",
+    "db:migrate:safe": "powershell -ExecutionPolicy Bypass -File ./scripts/safe-migrate.ps1"
   },
   "keywords": [],
   "author": "",
@@ -24,6 +26,7 @@
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.1.1",
+    "nodemailer": "^8.0.2",
     "pg": "^8.20.0",
     "prisma": "^7.5.0"
   },
