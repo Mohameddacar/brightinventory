@@ -37,6 +37,7 @@ const authRoutes = require('./routes/authRoutes');
 const accountRoutes = require('./routes/accountRoutes');
 const paymentMethodRoutes = require('./routes/paymentMethodRoutes');
 const transferRoutes = require('./routes/transferRoutes');
+const dashboardRoutes = require('./routes/dashboardRoutes');
 
 const app = express();
 
@@ -91,6 +92,7 @@ app.use('/api', authRoutes);
 app.use('/api', transferRoutes);
 app.use('/api', accountRoutes);
 app.use('/api', paymentMethodRoutes);
+app.use('/api', dashboardRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ message: `Cannot ${req.method} ${req.originalUrl}` });

@@ -234,6 +234,55 @@ export type UserEffectivePermissionResponse = {
   permission_names: string[]
 }
 
+export type DashboardSummaryCard = {
+  key: string
+  title: string
+  value: string
+  trend: string
+  tone: "success" | "warning" | "danger" | "info"
+}
+
+export type DashboardWeeklySale = {
+  day: string
+  sales: number
+}
+
+export type DashboardTopSellingProduct = {
+  name: string
+  quantity: number
+  percent: number
+}
+
+export type DashboardStockDistribution = {
+  name: string
+  value: number
+  fill: string
+}
+
+export type DashboardInventoryAlert = {
+  productName: string
+  sku: string
+  warehouse: string
+  currentStock: string
+  status: string
+}
+
+export type DashboardRecentActivity = {
+  text: string
+  time: string
+  type: "success" | "info"
+}
+
+export type DashboardOverviewResponse = {
+  summaryCards: DashboardSummaryCard[]
+  weeklySales: DashboardWeeklySale[]
+  topSellingProducts: DashboardTopSellingProduct[]
+  stockDistribution: DashboardStockDistribution[]
+  totalStockItems: number
+  inventoryAlerts: DashboardInventoryAlert[]
+  recentActivity: DashboardRecentActivity[]
+}
+
 export type UserApiPayload = {
   name: string
   email: string
@@ -884,4 +933,8 @@ export async function createModulePermissions(module: string, actions: string[])
     method: "POST",
     body: JSON.stringify({ module, actions }),
   })
+}
+
+export async function getDashboardOverview() {
+  return request<DashboardOverviewResponse>("/dashboard/overview")
 }
