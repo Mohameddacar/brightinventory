@@ -63,6 +63,43 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
+async function requestBlob(path: string, options?: RequestInit): Promise<Blob> {
+  const token = getAuthToken()
+
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options?.headers ?? {}),
+      },
+      ...options,
+    })
+  } catch {
+    throw new Error("Unable to reach server. Please ensure backend is running.")
+  }
+
+  if (!response.ok) {
+    let errorMessage = "Request failed"
+    try {
+      const raw = await response.text()
+      if (raw?.trim()) {
+        try {
+          const parsed = JSON.parse(raw)
+          errorMessage = parsed.message || raw
+        } catch {
+          errorMessage = raw
+        }
+      }
+    } catch {
+      // Keep fallback error message.
+    }
+    throw new Error(errorMessage)
+  }
+
+  return response.blob()
+}
+
 export type ProductApiPayload = {
   category_id: number
   product_code?: string | null
@@ -136,6 +173,20 @@ export type ExpensePaymentApiPayload = {
   amount: number
   payment_date: string
   remarks?: string | null
+}
+
+export type CashDepositApiPayload = {
+  amount: number
+  deposit_date: string
+  remarks?: string | null
+}
+
+export type TransactionClosingApiPayload = {
+  closing_date: string
+  total_sales: number
+  total_expense: number
+  cash_balance: number
+  created_by: number
 }
 
 export type AccountApiPayload = {
@@ -281,6 +332,73 @@ export type DashboardOverviewResponse = {
   totalStockItems: number
   inventoryAlerts: DashboardInventoryAlert[]
   recentActivity: DashboardRecentActivity[]
+}
+
+export type UnifiedReportColumn = {
+  key: string
+  label: string
+  type?: "text" | "currency" | "date" | "number" | "status"
+}
+
+export type UnifiedReportSummary = {
+  label: string
+  value: string
+  tone?: "primary" | "success" | "warning" | "danger"
+}
+
+export type UnifiedReportFilterOption = {
+  value: string
+  label: string
+}
+
+export type UnifiedReportFilterDefinition = {
+  key: string
+  label: string
+  options: UnifiedReportFilterOption[]
+}
+
+export type UnifiedReportResponse = {
+  reportType: string
+  title: string
+  columns: UnifiedReportColumn[]
+  rows: Array<Record<string, string | number>>
+  summary: UnifiedReportSummary[]
+  pagination: {
+    page: number
+    limit: number
+    total: number
+    totalPages: number
+  }
+  availableFilters: UnifiedReportFilterDefinition[]
+  applied: {
+    fromDate: string
+    toDate: string
+    search: string
+    sortKey: string
+    sortDir: "asc" | "desc"
+    filters: Record<string, string>
+  }
+}
+
+export type UnifiedReportQuery = {
+  reportType: string
+  fromDate?: string
+  toDate?: string
+  search?: string
+  sortKey?: string
+  sortDir?: "asc" | "desc"
+  page?: number
+  limit?: number
+  customer?: string
+  paymentStatus?: string
+  supplier?: string
+  status?: string
+  category?: string
+  expenseType?: string
+  warehouse?: string
+  account?: string
+  type?: string
+  period?: string
 }
 
 export type UserApiPayload = {
@@ -724,6 +842,54 @@ export async function deleteExpensePayment<T = unknown>(id: number) {
   })
 }
 
+export async function getCashDeposits<T = unknown>() {
+  return request<T>("/cash-deposits")
+}
+
+export async function createCashDeposit<T = unknown>(payload: CashDepositApiPayload) {
+  return request<T>("/cash-deposits", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateCashDeposit<T = unknown>(id: number, payload: CashDepositApiPayload) {
+  return request<T>(`/cash-deposits/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteCashDeposit<T = unknown>(id: number) {
+  return request<T>(`/cash-deposits/${id}`, {
+    method: "DELETE",
+  })
+}
+
+export async function getTransactionClosings<T = unknown>() {
+  return request<T>("/transaction-closings")
+}
+
+export async function createTransactionClosing<T = unknown>(payload: TransactionClosingApiPayload) {
+  return request<T>("/transaction-closings", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateTransactionClosing<T = unknown>(id: number, payload: TransactionClosingApiPayload) {
+  return request<T>(`/transaction-closings/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteTransactionClosing<T = unknown>(id: number) {
+  return request<T>(`/transaction-closings/${id}`, {
+    method: "DELETE",
+  })
+}
+
 export async function getAccounts<T = unknown>(params?: { search?: string; page?: number; limit?: number }) {
   const searchParams = new URLSearchParams()
 
@@ -937,4 +1103,32 @@ export async function createModulePermissions(module: string, actions: string[])
 
 export async function getDashboardOverview() {
   return request<DashboardOverviewResponse>("/dashboard/overview")
+}
+
+const buildReportQueryString = (params: UnifiedReportQuery) => {
+  const searchParams = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null) {
+      return
+    }
+
+    const stringValue = String(value).trim()
+    if (!stringValue) {
+      return
+    }
+
+    searchParams.set(key, stringValue)
+  })
+
+  return searchParams.toString()
+}
+
+export async function getUnifiedReport(params: UnifiedReportQuery) {
+  const query = buildReportQueryString(params)
+  return request<UnifiedReportResponse>(`/reports${query ? `?${query}` : ""}`)
+}
+
+export async function exportUnifiedReport(format: "pdf" | "xlsx", params: UnifiedReportQuery) {
+  const query = buildReportQueryString(params)
+  return requestBlob(`/reports/export/${format}${query ? `?${query}` : ""}`)
 }

@@ -19,6 +19,25 @@ const createReportLog = async (data) => {
   `;
 };
 
+const createSystemReportLog = async ({ report_name, generated_by }) => {
+  const name = String(report_name || '').trim();
+  const userId = Number(generated_by);
+
+  if (!name || !Number.isFinite(userId) || userId <= 0) {
+    return;
+  }
+
+  try {
+    await prisma.$executeRaw`
+      INSERT INTO report_logs (report_name, generated_by)
+      VALUES (${name}, ${userId})
+    `;
+  } catch {
+    // Fallback to stored procedure in environments that enforce DB routines.
+    await createReportLog({ report_name: name, generated_by: userId });
+  }
+};
+
 const updateReportLog = async (id, data) => {
   const {
     report_name,
@@ -63,6 +82,7 @@ module.exports = {
   deleteReportLog,
   getAllReportLogs,
   getReportLogById,
+  createSystemReportLog,
 };
 
 

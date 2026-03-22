@@ -38,6 +38,7 @@ const accountRoutes = require('./routes/accountRoutes');
 const paymentMethodRoutes = require('./routes/paymentMethodRoutes');
 const transferRoutes = require('./routes/transferRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
+const unifiedReportRoutes = require('./routes/unifiedReportRoutes');
 
 const app = express();
 
@@ -93,6 +94,7 @@ app.use('/api', transferRoutes);
 app.use('/api', accountRoutes);
 app.use('/api', paymentMethodRoutes);
 app.use('/api', dashboardRoutes);
+app.use('/api', unifiedReportRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ message: `Cannot ${req.method} ${req.originalUrl}` });
