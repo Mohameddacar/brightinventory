@@ -2,6 +2,7 @@ const { PrismaClient } = require('@prisma/client');
 const { PrismaPg } = require('@prisma/adapter-pg');
 const { Pool } = require('pg');
 const { ensurePurchaseSchema } = require('./PurchaseServices');
+const { ensureInventorySchema, applyMovementBatch, resolveWarehouseId } = require('./InventoryServices');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
@@ -112,30 +113,12 @@ const ensureSaleSchema = async () => {
     );
   `);
 
+  await ensureInventorySchema();
+
   saleSchemaReady = true;
 };
 
-const ensureWarehouseId = async (tx, requestedWarehouseId) => {
-  const parsed = Number(requestedWarehouseId);
-  if (Number.isFinite(parsed) && parsed > 0) {
-    return parsed;
-  }
-
-  const rows = await tx.$queryRaw`
-    SELECT id
-    FROM warehouses
-    ORDER BY id ASC
-    LIMIT 1
-  `;
-
-  if (!Array.isArray(rows) || rows.length === 0) {
-    throw new Error('No warehouse found. Create a warehouse before creating sales.');
-  }
-
-  return Number(rows[0].id);
-};
-
-const validateStock = async (tx, normalizedItems, previousQtyByProduct = new Map()) => {
+const validateStock = async (tx, normalizedItems, warehouseId, previousQtyByProduct = new Map()) => {
   const productIds = [...new Set(normalizedItems.map((item) => Number(item.product_id)).filter((value) => Number.isFinite(value) && value > 0))];
 
   if (productIds.length === 0) {
@@ -144,11 +127,16 @@ const validateStock = async (tx, normalizedItems, previousQtyByProduct = new Map
 
   const products = await tx.$queryRawUnsafe(
     `
-      SELECT id, product_name, COALESCE(current_stock, opening_quantity, 0) AS current_stock
-      FROM products
-      WHERE id = ANY($1::int[])
+      SELECT
+        p.id,
+        p.product_name,
+        COALESCE(i.quantity_on_hand, 0) AS current_stock
+      FROM products p
+      LEFT JOIN inventory i ON i.product_id = p.id AND i.warehouse_id = $2
+      WHERE p.id = ANY($1::int[])
     `,
-    productIds
+    productIds,
+    Number(warehouseId)
   );
 
   const productById = new Map();
@@ -172,7 +160,7 @@ const validateStock = async (tx, normalizedItems, previousQtyByProduct = new Map
     const requiredAdditional = Math.max(0, item.quantity - previousQty);
 
     if (requiredAdditional > available) {
-      stockIssues.push(`${product.product_name}: only ${available} in stock, requested additional ${requiredAdditional}`);
+      stockIssues.push(`${product.product_name}: only ${available} in stock at warehouse ${warehouseId}, requested additional ${requiredAdditional}`);
     }
   });
 
@@ -220,28 +208,6 @@ const upsertSaleItems = async (tx, saleId, normalizedItems) => {
   }
 };
 
-const applyStockDelta = async (tx, previousQtyByProduct, nextQtyByProduct) => {
-  const productIds = new Set([...previousQtyByProduct.keys(), ...nextQtyByProduct.keys()]);
-
-  for (const productId of productIds) {
-    const previousQty = previousQtyByProduct.get(productId) || 0;
-    const nextQty = nextQtyByProduct.get(productId) || 0;
-    const delta = previousQty - nextQty;
-
-    if (delta === 0) {
-      continue;
-    }
-
-    await tx.$executeRaw`
-      UPDATE products
-      SET
-        current_stock = GREATEST(0, COALESCE(current_stock, 0) + ${delta}),
-        updated_at = NOW()
-      WHERE id = ${Number(productId)}
-    `;
-  }
-};
-
 const createSale = async (saleData) => {
   await ensureSaleSchema();
 
@@ -259,8 +225,8 @@ const createSale = async (saleData) => {
   const invoiceNo = String(saleData.invoice_no || '').trim() || `INV-${Date.now()}`;
 
   await prisma.$transaction(async (tx) => {
-    const warehouseId = await ensureWarehouseId(tx, saleData.warehouse_id);
-    await validateStock(tx, normalizedItems, new Map());
+    const warehouseId = await resolveWarehouseId(tx, saleData.warehouse_id);
+    await validateStock(tx, normalizedItems, warehouseId, new Map());
 
     const createdRows = await tx.$queryRaw`
       INSERT INTO sales (
@@ -311,7 +277,19 @@ const createSale = async (saleData) => {
       nextQtyByProduct.set(item.product_id, (nextQtyByProduct.get(item.product_id) || 0) + item.quantity);
     });
 
-    await applyStockDelta(tx, new Map(), nextQtyByProduct);
+    await applyMovementBatch(
+      tx,
+      Array.from(nextQtyByProduct.entries()).map(([productId, qty]) => ({
+        product_id: Number(productId),
+        warehouse_id: warehouseId,
+        delta: -Number(qty),
+        movement_type: 'OUT',
+        movement_quantity: Number(qty),
+        reference_type: 'SALE',
+        reference_id: saleId,
+        note: `Sale ${invoiceNo}`,
+      }))
+    );
   });
 };
 
@@ -331,10 +309,10 @@ const updateSale = async (id, saleData) => {
   const invoiceNo = String(saleData.invoice_no || '').trim() || `INV-${Date.now()}`;
 
   await prisma.$transaction(async (tx) => {
-    const warehouseId = await ensureWarehouseId(tx, saleData.warehouse_id);
+    const warehouseId = await resolveWarehouseId(tx, saleData.warehouse_id);
 
     const existingRows = await tx.$queryRaw`
-      SELECT id, paid
+      SELECT id, paid, warehouse_id
       FROM sales
       WHERE id = ${saleId}
       LIMIT 1
@@ -357,14 +335,70 @@ const updateSale = async (id, saleData) => {
       previousQtyByProduct.set(productId, (previousQtyByProduct.get(productId) || 0) + qty);
     });
 
-    await validateStock(tx, normalizedItems, previousQtyByProduct);
+    const existingWarehouseId = await resolveWarehouseId(tx, existingRows[0].warehouse_id);
+
+    if (existingWarehouseId === warehouseId) {
+      await validateStock(tx, normalizedItems, warehouseId, previousQtyByProduct);
+    } else {
+      await validateStock(tx, normalizedItems, warehouseId, new Map());
+    }
 
     const nextQtyByProduct = new Map();
     normalizedItems.forEach((item) => {
       nextQtyByProduct.set(item.product_id, (nextQtyByProduct.get(item.product_id) || 0) + item.quantity);
     });
 
-    await applyStockDelta(tx, previousQtyByProduct, nextQtyByProduct);
+    const movementOps = [];
+    const productIds = new Set([...previousQtyByProduct.keys(), ...nextQtyByProduct.keys()]);
+
+    for (const productId of productIds) {
+      const previousQty = previousQtyByProduct.get(productId) || 0;
+      const nextQty = nextQtyByProduct.get(productId) || 0;
+
+      if (existingWarehouseId === warehouseId) {
+        const delta = previousQty - nextQty;
+        if (delta !== 0) {
+          movementOps.push({
+            product_id: productId,
+            warehouse_id: warehouseId,
+            delta,
+            movement_type: delta > 0 ? 'IN' : 'OUT',
+            movement_quantity: Math.abs(delta),
+            reference_type: 'SALE',
+            reference_id: saleId,
+            note: `Sale update ${invoiceNo}`,
+          });
+        }
+      } else {
+        if (previousQty > 0) {
+          movementOps.push({
+            product_id: productId,
+            warehouse_id: existingWarehouseId,
+            delta: previousQty,
+            movement_type: 'IN',
+            movement_quantity: previousQty,
+            reference_type: 'SALE',
+            reference_id: saleId,
+            note: `Sale warehouse change return ${invoiceNo}`,
+          });
+        }
+
+        if (nextQty > 0) {
+          movementOps.push({
+            product_id: productId,
+            warehouse_id: warehouseId,
+            delta: -nextQty,
+            movement_type: 'OUT',
+            movement_quantity: nextQty,
+            reference_type: 'SALE',
+            reference_id: saleId,
+            note: `Sale warehouse change issue ${invoiceNo}`,
+          });
+        }
+      }
+    }
+
+    await applyMovementBatch(tx, movementOps);
     await upsertSaleItems(tx, saleId, normalizedItems);
 
     const paid = Math.max(0, toNumber(saleData.paid, toNumber(existingRows[0].paid, 0)));
@@ -401,7 +435,7 @@ const deleteSale = async (id) => {
 
   await prisma.$transaction(async (tx) => {
     const saleRows = await tx.$queryRaw`
-      SELECT id
+      SELECT id, invoice_no, warehouse_id
       FROM sales
       WHERE id = ${saleId}
       LIMIT 1
@@ -417,15 +451,21 @@ const deleteSale = async (id) => {
       WHERE sale_id = ${saleId}
     `;
 
-    for (const row of itemRows) {
-      await tx.$executeRaw`
-        UPDATE products
-        SET
-          current_stock = COALESCE(current_stock, 0) + ${toPositiveInt(row.quantity, 0)},
-          updated_at = NOW()
-        WHERE id = ${Number(row.product_id)}
-      `;
-    }
+    const warehouseId = await resolveWarehouseId(tx, saleRows[0].warehouse_id);
+
+    await applyMovementBatch(
+      tx,
+      itemRows.map((row) => ({
+        product_id: Number(row.product_id),
+        warehouse_id: warehouseId,
+        delta: toPositiveInt(row.quantity, 0),
+        movement_type: 'IN',
+        movement_quantity: toPositiveInt(row.quantity, 0),
+        reference_type: 'SALE',
+        reference_id: saleId,
+        note: `Sale deleted ${saleRows[0].invoice_no}`,
+      }))
+    );
 
     await tx.$executeRaw`
       DELETE FROM sale_items
@@ -525,13 +565,15 @@ const getSaleItemsBySaleId = async (id) => {
       p.product_name,
       COALESCE(NULLIF(p.product_barcode, ''), p.product_code) AS barcode,
       COALESCE(si.unit_price, si.price, 0) AS unit_price,
-      COALESCE(p.current_stock, p.opening_quantity, 0) AS current_stock,
+      COALESCE(inv.quantity_on_hand, 0) AS current_stock,
       si.quantity,
       COALESCE(si.discount, 0) AS discount,
       COALESCE(si.tax, 0) AS tax,
       COALESCE(si.subtotal, si.total, 0) AS subtotal
     FROM sale_items si
     JOIN products p ON p.id = si.product_id
+    JOIN sales s ON s.id = si.sale_id
+    LEFT JOIN inventory inv ON inv.product_id = si.product_id AND inv.warehouse_id = s.warehouse_id
     WHERE si.sale_id = ${Number(id)}
     ORDER BY si.id ASC
   `;

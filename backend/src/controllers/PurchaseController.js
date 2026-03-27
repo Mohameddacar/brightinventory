@@ -73,6 +73,10 @@ const updatePurchase = async (req, res) => {
     await purchaseService.updatePurchase(id, req.body);
     return res.status(200).json({ message: 'Purchase updated successfully' });
   } catch (error) {
+    if (error.code === 'LOW_STOCK') {
+      return res.status(400).json({ message: error.message, ...(error.meta || {}) });
+    }
+
     if (error.message === 'Purchase not found') {
       return res.status(404).json({ message: error.message });
     }

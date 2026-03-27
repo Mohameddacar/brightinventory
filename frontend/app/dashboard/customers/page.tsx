@@ -7,8 +7,11 @@ import { LayoutFooter } from "@/components/layout/footer"
 import { SiteHeader } from "@/components/site-header"
 import {
   createCustomer,
+  createCustomerReceipt,
   deleteCustomer,
+  getCustomerReceipts,
   getCustomers,
+  getSales,
   getSponsors,
   updateCustomer,
   type CustomerApiPayload,
@@ -34,6 +37,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -52,6 +62,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   EyeIcon,
@@ -59,6 +70,7 @@ import {
   PlusIcon,
   SearchIcon,
   TrashIcon,
+  WalletCardsIcon,
 } from "lucide-react"
 import type { CSSProperties } from "react"
 
@@ -83,6 +95,45 @@ type ApiSponsor = {
   full_name: string
 }
 
+type ApiSale = {
+  id: number
+  invoice_no: string
+  customer_id: number
+  invoice_date: string
+  grand_total: string | number
+  paid: string | number
+  rest: string | number
+}
+
+type ApiCustomerReceipt = {
+  id: number
+  customer_id: number
+  invoice_no: number
+  payment_mode: string
+  amount: string | number
+  remarks: string | null
+  created_at: string
+}
+
+type ReceiptPaymentStatus = "not-paid" | "partial" | "full-paid"
+
+type CustomerSaleSummary = ApiSale & {
+  initialPaidAmount: number
+  paidThroughReceipts: number
+  totalPaidAmount: number
+  effectiveOutstanding: number
+  paymentStatus: ReceiptPaymentStatus
+}
+
+type CustomerActionKey = "customer-detail" | "edit-customer" | "delete-customer" | "customer-receipts"
+
+type CustomerAction = {
+  key: CustomerActionKey
+  label: string
+  icon: React.ComponentType<{ className?: string }>
+  isDanger?: boolean
+}
+
 type CustomerForm = {
   full_name: string
   gender: "male" | "female"
@@ -96,10 +147,26 @@ type CustomerForm = {
   registered_date: string
 }
 
+type CustomerReceiptForm = {
+  invoice_id: string
+  invoice_date: string
+  customer_id: string
+  payment_mode: string
+  amount: string
+  remarks: string
+}
+
 const PAGE_SIZE = 10
 const NAME_PATTERN = /^[A-Za-z][A-Za-z\s'.-]{1,119}$/
 const MOBILE_PATTERN = /^[+0-9][0-9\-\s]{6,29}$/
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+const ACTION_ITEMS: CustomerAction[] = [
+  { key: "customer-detail", label: "Customer Details", icon: EyeIcon },
+  { key: "edit-customer", label: "Edit Customer", icon: PencilIcon },
+  { key: "customer-receipts", label: "Customer Receipts", icon: WalletCardsIcon },
+  { key: "delete-customer", label: "Delete Customer", icon: TrashIcon, isDanger: true },
+]
 
 const emptyForm: CustomerForm = {
   full_name: "",
@@ -114,9 +181,41 @@ const emptyForm: CustomerForm = {
   registered_date: "",
 }
 
+const getDefaultReceiptForm = (sale?: CustomerSaleSummary | null): CustomerReceiptForm => ({
+  invoice_id: sale ? String(sale.id) : "",
+  invoice_date: new Date().toISOString().slice(0, 16),
+  customer_id: sale ? String(sale.customer_id) : "",
+  payment_mode: "cash",
+  amount: sale ? String(sale.effectiveOutstanding.toFixed(2)) : "0",
+  remarks: "",
+})
+
+function toNumber(value: string | number | null | undefined) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function formatCurrency(value: string | number | null | undefined) {
+  return `$${toNumber(value).toFixed(2)}`
+}
+
+function getPaymentStatus(outstanding: number, totalPaid: number): ReceiptPaymentStatus {
+  if (outstanding <= 0) {
+    return "full-paid"
+  }
+
+  if (totalPaid <= 0) {
+    return "not-paid"
+  }
+
+  return "partial"
+}
+
 export default function CustomersPage() {
   const [customers, setCustomers] = React.useState<ApiCustomer[]>([])
   const [sponsors, setSponsors] = React.useState<ApiSponsor[]>([])
+  const [sales, setSales] = React.useState<ApiSale[]>([])
+  const [customerReceipts, setCustomerReceipts] = React.useState<ApiCustomerReceipt[]>([])
 
   const [searchTerm, setSearchTerm] = React.useState("")
   const [page, setPage] = React.useState(1)
@@ -124,15 +223,21 @@ export default function CustomersPage() {
   const [isAddOpen, setIsAddOpen] = React.useState(false)
   const [isViewOpen, setIsViewOpen] = React.useState(false)
   const [isEditOpen, setIsEditOpen] = React.useState(false)
+  const [isReceiptsOpen, setIsReceiptsOpen] = React.useState(false)
+  const [isAddReceiptOpen, setIsAddReceiptOpen] = React.useState(false)
   const [deleteId, setDeleteId] = React.useState<number | null>(null)
 
   const [selectedCustomer, setSelectedCustomer] = React.useState<ApiCustomer | null>(null)
   const [addForm, setAddForm] = React.useState<CustomerForm>(emptyForm)
   const [editForm, setEditForm] = React.useState<CustomerForm>(emptyForm)
+  const [receiptForm, setReceiptForm] = React.useState<CustomerReceiptForm>(getDefaultReceiptForm())
 
   const [loading, setLoading] = React.useState(true)
+  const [financeLoading, setFinanceLoading] = React.useState(true)
+  const [receiptSubmitLoading, setReceiptSubmitLoading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [formError, setFormError] = React.useState<string | null>(null)
+  const [receiptError, setReceiptError] = React.useState<string | null>(null)
 
   const loadCustomers = React.useCallback(async () => {
     setLoading(true)
@@ -157,10 +262,29 @@ export default function CustomersPage() {
     }
   }, [])
 
+  const loadFinanceData = React.useCallback(async () => {
+    setFinanceLoading(true)
+
+    try {
+      const [saleData, receiptData] = await Promise.all([
+        getSales<ApiSale[]>(),
+        getCustomerReceipts<ApiCustomerReceipt[]>(),
+      ])
+
+      setSales(Array.isArray(saleData) ? saleData : [])
+      setCustomerReceipts(Array.isArray(receiptData) ? receiptData : [])
+    } catch {
+      // Keep current finance data if loading fails.
+    } finally {
+      setFinanceLoading(false)
+    }
+  }, [])
+
   React.useEffect(() => {
-    loadCustomers()
-    loadSponsors()
-  }, [loadCustomers, loadSponsors])
+    void loadCustomers()
+    void loadSponsors()
+    void loadFinanceData()
+  }, [loadCustomers, loadSponsors, loadFinanceData])
 
   const filteredCustomers = React.useMemo(() => {
     const query = searchTerm.trim().toLowerCase()
@@ -206,6 +330,84 @@ export default function CustomersPage() {
 
     return selectedCustomer?.sponsor_name || "None"
   }, [editForm.sponsor_id, sponsors, selectedCustomer])
+
+  const selectedCustomerReceipts = React.useMemo(() => {
+    if (!selectedCustomer) {
+      return []
+    }
+
+    return customerReceipts
+      .filter((item) => Number(item.customer_id) === Number(selectedCustomer.id))
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  }, [customerReceipts, selectedCustomer])
+
+  const selectedCustomerSales = React.useMemo(() => {
+    if (!selectedCustomer) {
+      return []
+    }
+
+    return sales
+      .filter((item) => Number(item.customer_id) === Number(selectedCustomer.id))
+      .sort((a, b) => new Date(b.invoice_date).getTime() - new Date(a.invoice_date).getTime())
+  }, [sales, selectedCustomer])
+
+  const selectedCustomerReceiptsBySaleId = React.useMemo(() => {
+    const totals = new Map<number, number>()
+
+    for (const receipt of selectedCustomerReceipts) {
+      const saleId = Number(receipt.invoice_no)
+      const current = totals.get(saleId) || 0
+      totals.set(saleId, current + toNumber(receipt.amount))
+    }
+
+    return totals
+  }, [selectedCustomerReceipts])
+
+  const selectedCustomerSaleSummaries = React.useMemo<CustomerSaleSummary[]>(() => {
+    return selectedCustomerSales.map((sale) => {
+      const grandTotal = toNumber(sale.grand_total)
+      const rawDue = toNumber(sale.rest)
+      const baseDue = Math.max(0, rawDue)
+      const initialPaidAmount = Math.max(0, grandTotal - baseDue)
+      const paidThroughReceipts = selectedCustomerReceiptsBySaleId.get(Number(sale.id)) || 0
+      const totalPaidAmount = Math.min(grandTotal, initialPaidAmount + paidThroughReceipts)
+      const effectiveOutstanding = Math.max(0, grandTotal - totalPaidAmount)
+      const paymentStatus = getPaymentStatus(effectiveOutstanding, totalPaidAmount)
+
+      return {
+        ...sale,
+        initialPaidAmount,
+        paidThroughReceipts,
+        totalPaidAmount,
+        effectiveOutstanding,
+        paymentStatus,
+      }
+    })
+  }, [selectedCustomerSales, selectedCustomerReceiptsBySaleId])
+
+  const selectedCustomerOutstandingSales = React.useMemo(() => {
+    return selectedCustomerSaleSummaries.filter((item) => item.effectiveOutstanding > 0)
+  }, [selectedCustomerSaleSummaries])
+
+  const selectedCustomerOutstandingTotal = React.useMemo(() => {
+    return selectedCustomerOutstandingSales.reduce((sum, item) => sum + item.effectiveOutstanding, 0)
+  }, [selectedCustomerOutstandingSales])
+
+  const selectedInvoice = React.useMemo<CustomerSaleSummary | null>(() => {
+    if (!receiptForm.invoice_id) {
+      return null
+    }
+
+    return (
+      selectedCustomerOutstandingSales.find(
+        (item) => Number(item.id) === Number(receiptForm.invoice_id)
+      ) || null
+    )
+  }, [selectedCustomerOutstandingSales, receiptForm.invoice_id])
+
+  const salesById = React.useMemo(() => {
+    return new Map(selectedCustomerSaleSummaries.map((item) => [Number(item.id), item]))
+  }, [selectedCustomerSaleSummaries])
 
   const validateCustomerForm = React.useCallback((form: CustomerForm): string | null => {
     const fullName = form.full_name.trim()
@@ -344,6 +546,116 @@ export default function CustomersPage() {
     setIsEditOpen(true)
   }
 
+  const openReceiptsModal = async (customer: ApiCustomer) => {
+    setSelectedCustomer(customer)
+    setReceiptError(null)
+    setIsReceiptsOpen(true)
+    await loadFinanceData()
+  }
+
+  const openAddReceiptModal = (customer: ApiCustomer) => {
+    const dueInvoices = selectedCustomerSaleSummaries
+      .filter((item) => Number(item.customer_id) === Number(customer.id) && item.effectiveOutstanding > 0)
+      .sort((a, b) => new Date(b.invoice_date).getTime() - new Date(a.invoice_date).getTime())
+
+    const firstDueInvoice = dueInvoices[0] || null
+
+    setSelectedCustomer(customer)
+    setReceiptError(null)
+    setReceiptForm(getDefaultReceiptForm(firstDueInvoice))
+    setIsAddReceiptOpen(true)
+  }
+
+  const handleCustomerActionClick = async (action: CustomerAction, customer: ApiCustomer) => {
+    if (action.key === "customer-detail") {
+      openViewModal(customer)
+      return
+    }
+
+    if (action.key === "edit-customer") {
+      openEditModal(customer)
+      return
+    }
+
+    if (action.key === "delete-customer") {
+      setDeleteId(customer.id)
+      return
+    }
+
+    if (action.key === "customer-receipts") {
+      await openReceiptsModal(customer)
+    }
+  }
+
+  const handleCustomerReceiptSubmit = async () => {
+    if (!selectedCustomer) {
+      return
+    }
+
+    const selectedSaleId = Number(receiptForm.invoice_id)
+    if (!selectedSaleId) {
+      const message = "Invoice is required."
+      setReceiptError(message)
+      appNotify.failed("Add Customer Receipt", message)
+      return
+    }
+
+    if (!receiptForm.invoice_date) {
+      const message = "Invoice date is required."
+      setReceiptError(message)
+      appNotify.failed("Add Customer Receipt", message)
+      return
+    }
+
+    const paymentAmount = toNumber(receiptForm.amount)
+    if (paymentAmount <= 0) {
+      const message = "Amount must be greater than 0."
+      setReceiptError(message)
+      appNotify.failed("Add Customer Receipt", message)
+      return
+    }
+
+    if (selectedInvoice && selectedInvoice.paymentStatus === "full-paid") {
+      const message = "This invoice is already fully paid."
+      setReceiptError(message)
+      appNotify.failed("Add Customer Receipt", message)
+      return
+    }
+
+    const invoiceOutstanding = toNumber(selectedInvoice?.effectiveOutstanding)
+    if (selectedInvoice && paymentAmount > invoiceOutstanding) {
+      const message = `Amount cannot exceed outstanding balance (${formatCurrency(invoiceOutstanding)}).`
+      setReceiptError(message)
+      appNotify.failed("Add Customer Receipt", message)
+      return
+    }
+
+    setReceiptSubmitLoading(true)
+    setReceiptError(null)
+
+    try {
+      await createCustomerReceipt({
+        customer_id: Number(selectedCustomer.id),
+        invoice_no: selectedSaleId,
+        payment_mode: receiptForm.payment_mode,
+        amount: paymentAmount,
+        remarks: receiptForm.remarks.trim() ? receiptForm.remarks.trim() : null,
+        created_at: new Date(receiptForm.invoice_date).toISOString(),
+      })
+
+      setIsAddReceiptOpen(false)
+      setIsReceiptsOpen(true)
+      await Promise.all([loadCustomers(), loadFinanceData()])
+      appNotify.completed("Customer Receipt", "Customer receipt saved successfully.")
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to save customer receipt"
+      setReceiptError(message)
+      appNotify.failed("Add Customer Receipt", message)
+    } finally {
+      setReceiptSubmitLoading(false)
+    }
+  }
+
   return (
     <SidebarProvider
       style={
@@ -363,7 +675,7 @@ export default function CustomersPage() {
               <div>
                 <CardTitle className="text-lg">Customers</CardTitle>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Manage all customer records with sponsor-name selection.
+                  Manage all customer records and customer receipts from customer actions.
                 </p>
                 {error ? <p className="mt-2 text-xs text-rose-600">{error}</p> : null}
                 {formError ? <p className="mt-1 text-xs text-rose-600">{formError}</p> : null}
@@ -423,35 +735,35 @@ export default function CustomersPage() {
                         <TableCell>{row.email || "-"}</TableCell>
                         <TableCell className="capitalize">{row.customer_type || "regular"}</TableCell>
                         <TableCell>{row.sponsor_name || "None"}</TableCell>
-                        <TableCell>${Number(row.opening_balance || 0).toFixed(2)}</TableCell>
+                        <TableCell>{formatCurrency(row.opening_balance || 0)}</TableCell>
                         <TableCell>{new Date(row.created_at).toLocaleDateString()}</TableCell>
                         <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => openViewModal(row)}
-                              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-zinc-100 hover:text-[#3FA3D3]"
-                              aria-label="View customer"
-                            >
-                              <EyeIcon className="size-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => openEditModal(row)}
-                              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-zinc-100 hover:text-amber-600"
-                              aria-label="Edit customer"
-                            >
-                              <PencilIcon className="size-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setDeleteId(row.id)}
-                              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-zinc-100 hover:text-rose-600"
-                              aria-label="Delete customer"
-                            >
-                              <TrashIcon className="size-4" />
-                            </button>
-                          </div>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger render={<Button className="bg-linear-to-r from-[#5ea5ff] to-[#3f83f8] text-white hover:from-[#4f97f6] hover:to-[#2f75eb]" />}>
+                              Action
+                              <ChevronDownIcon className="ml-1 size-4" />
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-56">
+                              {ACTION_ITEMS.map((action) => {
+                                const ActionIcon = action.icon
+
+                                return (
+                                  <React.Fragment key={action.key}>
+                                    {action.isDanger ? <DropdownMenuSeparator /> : null}
+                                    <DropdownMenuItem
+                                      variant={action.isDanger ? "destructive" : "default"}
+                                      onClick={() => {
+                                        void handleCustomerActionClick(action, row)
+                                      }}
+                                    >
+                                      <ActionIcon className="size-4" />
+                                      <span>{action.label}</span>
+                                    </DropdownMenuItem>
+                                  </React.Fragment>
+                                )
+                              })}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -482,7 +794,9 @@ export default function CustomersPage() {
                     <ChevronLeftIcon className="size-4" />
                     Previous
                   </Button>
-                  <span className="rounded-md border px-3 py-1 text-sm text-foreground">{currentPage}</span>
+                  <span className="rounded-md border px-3 py-1 text-sm text-foreground">
+                    {currentPage} / {totalPages}
+                  </span>
                   <Button
                     variant="outline"
                     size="sm"
@@ -784,31 +1098,338 @@ export default function CustomersPage() {
       </Dialog>
 
       <Dialog open={isViewOpen} onOpenChange={setIsViewOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="max-w-5xl">
           <DialogHeader>
             <DialogTitle>Customer Details</DialogTitle>
-            <DialogDescription>View all customer information.</DialogDescription>
+            <DialogDescription>
+              Customer profile, outstanding invoices, and recent invoice status.
+            </DialogDescription>
           </DialogHeader>
 
-          <div className="grid gap-2 text-sm">
-            <div><span className="font-medium">Full Name:</span> {selectedCustomer?.full_name || "-"}</div>
-            <div><span className="font-medium">Gender:</span> {selectedCustomer?.gender || "-"}</div>
-            <div><span className="font-medium">Mobile:</span> {selectedCustomer?.mobile_no || "-"}</div>
-            <div><span className="font-medium">Email:</span> {selectedCustomer?.email || "-"}</div>
-            <div><span className="font-medium">Type:</span> {selectedCustomer?.customer_type || "regular"}</div>
-            <div><span className="font-medium">Sponsor:</span> {selectedCustomer?.sponsor_name || "None"}</div>
-            <div><span className="font-medium">Opening Balance:</span> ${Number(selectedCustomer?.opening_balance || 0).toFixed(2)}</div>
-            <div><span className="font-medium">Balance Type:</span> {selectedCustomer?.balance_type || "-"}</div>
-            <div><span className="font-medium">Address:</span> {selectedCustomer?.address || "-"}</div>
-            <div>
-              <span className="font-medium">Created At:</span>{" "}
-              {selectedCustomer ? new Date(selectedCustomer.created_at).toLocaleString() : "-"}
+          {selectedCustomer ? (
+            <div className="space-y-4 p-2">
+              <div className="grid gap-4 md:grid-cols-3">
+                <div className="rounded-lg border p-3">
+                  <p className="mb-2 text-sm font-semibold">Customer Info</p>
+                  <p className="text-sm font-medium">{selectedCustomer.full_name}</p>
+                  <p className="text-sm text-muted-foreground">{selectedCustomer.email || "-"}</p>
+                  <p className="text-sm text-muted-foreground">{selectedCustomer.mobile_no || "-"}</p>
+                  <p className="text-sm text-muted-foreground">{selectedCustomer.address || "-"}</p>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <p className="mb-2 text-sm font-semibold">Balance Overview</p>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span>Opening Balance</span>
+                      <span>{formatCurrency(selectedCustomer.opening_balance || 0)}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Outstanding Invoices</span>
+                      <span>{selectedCustomerOutstandingSales.length}</span>
+                    </div>
+                    <div className="flex items-center justify-between font-semibold text-rose-600">
+                      <span>Total Outstanding</span>
+                      <span>{formatCurrency(selectedCustomerOutstandingTotal)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <p className="mb-2 text-sm font-semibold">Customer Meta</p>
+                  <p className="text-sm">Type: {selectedCustomer.customer_type || "regular"}</p>
+                  <p className="text-sm">Sponsor: {selectedCustomer.sponsor_name || "None"}</p>
+                  <p className="text-sm">Receipts: {selectedCustomerReceipts.length}</p>
+                </div>
+              </div>
+
+              <div className="rounded-lg border">
+                <div className="border-b px-4 py-3 text-sm font-semibold">Recent Invoices</div>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Invoice</TableHead>
+                      <TableHead>Invoice Date</TableHead>
+                      <TableHead>Grand Total</TableHead>
+                      <TableHead>Paid</TableHead>
+                      <TableHead>Due</TableHead>
+                      <TableHead>Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {selectedCustomerSaleSummaries.length > 0 ? (
+                      selectedCustomerSaleSummaries.slice(0, 5).map((sale) => (
+                        <TableRow key={sale.id}>
+                          <TableCell className="font-medium">{sale.invoice_no}</TableCell>
+                          <TableCell>{new Date(sale.invoice_date).toLocaleString()}</TableCell>
+                          <TableCell>{formatCurrency(sale.grand_total)}</TableCell>
+                          <TableCell>{formatCurrency(sale.totalPaidAmount)}</TableCell>
+                          <TableCell className="font-semibold text-rose-600">{formatCurrency(sale.effectiveOutstanding)}</TableCell>
+                          <TableCell>
+                            <span
+                              className={
+                                sale.paymentStatus === "full-paid"
+                                  ? "font-medium text-emerald-600"
+                                  : sale.paymentStatus === "partial"
+                                    ? "font-medium text-amber-600"
+                                    : "font-medium text-rose-600"
+                              }
+                            >
+                              {sale.paymentStatus === "full-paid"
+                                ? "Full Paid"
+                                : sale.paymentStatus === "partial"
+                                  ? "Partial"
+                                  : "Not Paid"}
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={6} className="py-6 text-center text-muted-foreground">
+                          No invoices found for this customer.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
-          </div>
+          ) : null}
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setIsViewOpen(false)}>
               Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isReceiptsOpen} onOpenChange={setIsReceiptsOpen}>
+        <DialogContent className="max-w-5xl">
+          <DialogHeader>
+            <DialogTitle>Customer Receipts</DialogTitle>
+            <DialogDescription>
+              Review receipt history and settle outstanding customer invoices.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 p-2">
+            {selectedCustomer ? (
+              <div className="rounded-lg border p-3 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="font-medium">Customer: {selectedCustomer.full_name}</p>
+                    <p className="text-muted-foreground">Email: {selectedCustomer.email || "-"}</p>
+                  </div>
+                  <div className="text-right">
+                    <p>Outstanding Invoices: {selectedCustomerOutstandingSales.length}</p>
+                    <p className="font-semibold text-rose-600">Outstanding Balance: {formatCurrency(selectedCustomerOutstandingTotal)}</p>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="flex items-center justify-end">
+              <Button
+                type="button"
+                className="bg-[#3FA3D3] text-white hover:bg-[#53b2df]"
+                onClick={() => {
+                  if (!selectedCustomer) {
+                    return
+                  }
+                  openAddReceiptModal(selectedCustomer)
+                }}
+              >
+                <PlusIcon className="mr-1 size-4" />
+                Add Customer Receipt
+              </Button>
+            </div>
+
+            <div className="overflow-hidden rounded-lg border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Invoice</TableHead>
+                    <TableHead>Payment Method</TableHead>
+                    <TableHead>Amount</TableHead>
+                    <TableHead>Remarks</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {financeLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
+                        Loading customer receipts...
+                      </TableCell>
+                    </TableRow>
+                  ) : selectedCustomerReceipts.length > 0 ? (
+                    selectedCustomerReceipts.map((receipt) => {
+                      const sale = salesById.get(Number(receipt.invoice_no))
+
+                      return (
+                        <TableRow key={receipt.id}>
+                          <TableCell>{new Date(receipt.created_at).toLocaleString()}</TableCell>
+                          <TableCell>{sale?.invoice_no || `Invoice #${receipt.invoice_no}`}</TableCell>
+                          <TableCell className="capitalize">{receipt.payment_mode || "cash"}</TableCell>
+                          <TableCell className="font-medium">{formatCurrency(receipt.amount)}</TableCell>
+                          <TableCell>{receipt.remarks || "-"}</TableCell>
+                        </TableRow>
+                      )
+                    })
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
+                        No customer receipt records yet.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsReceiptsOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isAddReceiptOpen} onOpenChange={setIsAddReceiptOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Add Customer Receipt</DialogTitle>
+            <DialogDescription>HOME / CUSTOMER RECEIPT</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 p-2">
+            {receiptError ? <p className="text-sm text-rose-600">{receiptError}</p> : null}
+
+            <div className="rounded-md border p-3">
+              <p className="mb-2 text-sm font-semibold">Section: INVOICE DETAILS</p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Invoice</label>
+                  <Select
+                    value={receiptForm.invoice_id}
+                    onValueChange={(value) => {
+                      const invoice = selectedCustomerOutstandingSales.find(
+                        (item) => Number(item.id) === Number(value)
+                      )
+
+                      setReceiptForm((prev) => ({
+                        ...prev,
+                        invoice_id: value ? String(value) : "",
+                        customer_id: selectedCustomer ? String(selectedCustomer.id) : "",
+                        amount: invoice ? String(invoice.effectiveOutstanding.toFixed(2)) : prev.amount,
+                      }))
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select Invoice" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {selectedCustomerOutstandingSales.length > 0 ? (
+                        selectedCustomerOutstandingSales.map((invoice) => (
+                          <SelectItem key={invoice.id} value={String(invoice.id)}>
+                            {invoice.invoice_no} - Due {formatCurrency(invoice.effectiveOutstanding)}
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <SelectItem value="none" disabled>
+                          No outstanding invoices
+                        </SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Invoice Date</label>
+                  <Input
+                    type="datetime-local"
+                    value={receiptForm.invoice_date}
+                    placeholder="mm/dd/yyyy"
+                    onChange={(e) => setReceiptForm((prev) => ({ ...prev, invoice_date: e.target.value }))}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-md border p-3">
+              <p className="mb-2 text-sm font-semibold">Section: CUSTOMER DETAILS</p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Customer Name</label>
+                  <Input value={selectedCustomer?.full_name || ""} placeholder="Select Customer" readOnly />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Balance</label>
+                  <Input value={formatCurrency(selectedInvoice?.effectiveOutstanding || 0)} placeholder="$ 0.00" readOnly />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-md border p-3">
+              <p className="mb-2 text-sm font-semibold">Section: PAYMENT DETAILS</p>
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Payment Mode</label>
+                  <Select
+                    value={receiptForm.payment_mode}
+                    onValueChange={(value) => setReceiptForm((prev) => ({ ...prev, payment_mode: value || "cash" }))}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="cash">Cash</SelectItem>
+                      <SelectItem value="bank">Bank</SelectItem>
+                      <SelectItem value="mobile">Mobile</SelectItem>
+                      <SelectItem value="card">Card</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1 md:col-span-2">
+                  <label className="text-xs font-medium text-muted-foreground">Amount</label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={receiptForm.amount}
+                    placeholder="$ 0.00"
+                    onChange={(e) => setReceiptForm((prev) => ({ ...prev, amount: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-3 space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Remarks</label>
+                <Input
+                  value={receiptForm.remarks}
+                  placeholder="Add any additional notes here..."
+                  onChange={(e) => setReceiptForm((prev) => ({ ...prev, remarks: e.target.value }))}
+                />
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsAddReceiptOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-[#3FA3D3] text-white hover:bg-[#53b2df]"
+              onClick={handleCustomerReceiptSubmit}
+              disabled={receiptSubmitLoading || selectedCustomerOutstandingSales.length === 0}
+            >
+              {receiptSubmitLoading ? "Saving..." : "Save Receipt"}
             </Button>
           </DialogFooter>
         </DialogContent>

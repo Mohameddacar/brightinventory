@@ -234,7 +234,6 @@ const defaultPaymentForm = {
   payment_date: new Date().toISOString().slice(0, 16),
   amount: "0",
   payment_mode: "cash",
-  account_name: "Cash",
   remarks: "",
 }
 
@@ -601,7 +600,7 @@ export default function SalesPage() {
         payment_date: new Date(paymentForm.payment_date).toISOString(),
         amount,
         payment_mode: paymentForm.payment_mode,
-        account_name: paymentForm.account_name || null,
+        account_name: null,
         remarks: paymentForm.remarks || null,
       }
 
@@ -1703,7 +1702,16 @@ export default function SalesPage() {
             </div>
 
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Paying Amount *</label>
+              <label className="text-xs font-medium text-muted-foreground">Balance</label>
+              <Input
+                type="number"
+                value={paymentSale ? toNumber(paymentSale.rest).toFixed(2) : "0.00"}
+                disabled
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Amount *</label>
               <Input
                 type="number"
                 min="0"
@@ -1729,15 +1737,6 @@ export default function SalesPage() {
                   <SelectItem value="mobile-banking">Mobile Banking</SelectItem>
                 </SelectContent>
               </Select>
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Account</label>
-              <Input
-                value={paymentForm.account_name}
-                onChange={(e) => setPaymentForm((prev) => ({ ...prev, account_name: e.target.value }))}
-                placeholder="Choose Account"
-              />
             </div>
 
             <div className="space-y-1 md:col-span-2">

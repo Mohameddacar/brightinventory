@@ -5,6 +5,10 @@ const createSalesReturnItem = async (req, res) => {
 		await salesReturnItemService.createSalesReturnItem(req.body);
 		return res.status(201).json({ message: 'SalesReturnItem created successfully' });
 	} catch (error) {
+		if (error.code === 'LOW_STOCK' || error.message?.includes('required')) {
+			return res.status(400).json({ message: error.message, ...(error.meta || {}) });
+		}
+
 		return res.status(500).json({ message: 'Failed to create salesreturnitem', error: error.message });
 	}
 };
@@ -15,6 +19,14 @@ const updateSalesReturnItem = async (req, res) => {
 		await salesReturnItemService.updateSalesReturnItem(id, req.body);
 		return res.status(200).json({ message: 'SalesReturnItem updated successfully' });
 	} catch (error) {
+		if (error.code === 'LOW_STOCK' || error.message?.includes('required')) {
+			return res.status(400).json({ message: error.message, ...(error.meta || {}) });
+		}
+
+		if (error.message?.includes('not found')) {
+			return res.status(404).json({ message: error.message });
+		}
+
 		return res.status(500).json({ message: 'Failed to update salesreturnitem', error: error.message });
 	}
 };
@@ -25,6 +37,10 @@ const deleteSalesReturnItem = async (req, res) => {
 		await salesReturnItemService.deleteSalesReturnItem(id);
 		return res.status(200).json({ message: 'SalesReturnItem deleted successfully' });
 	} catch (error) {
+		if (error.code === 'LOW_STOCK') {
+			return res.status(400).json({ message: error.message, ...(error.meta || {}) });
+		}
+
 		return res.status(500).json({ message: 'Failed to delete salesreturnitem', error: error.message });
 	}
 };

@@ -30,6 +30,26 @@ const readSessionStorage = (key: string) => {
   return window.sessionStorage.getItem(key)
 }
 
+const readCookieValue = (key: string) => {
+  if (typeof document === "undefined") {
+    return null
+  }
+
+  const encodedKey = `${encodeURIComponent(key)}=`
+  const value = document.cookie
+    .split(";")
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(encodedKey))
+
+  if (!value) {
+    return null
+  }
+
+  const raw = value.slice(encodedKey.length)
+  const decoded = decodeURIComponent(raw).trim()
+  return decoded || null
+}
+
 export const setAuthSession = (token: string, user: SessionUser, rememberMe = true) => {
   if (typeof window === "undefined") {
     return
@@ -86,5 +106,11 @@ export const hasAuthSession = () => {
   if (typeof window === "undefined") {
     return false
   }
-  return Boolean(readSessionStorage(AUTH_TOKEN_STORAGE_KEY))
+
+  const tokenFromStorage = readSessionStorage(AUTH_TOKEN_STORAGE_KEY)
+  if (tokenFromStorage && tokenFromStorage.trim()) {
+    return true
+  }
+
+  return Boolean(readCookieValue("ims_token"))
 }

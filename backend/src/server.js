@@ -11,6 +11,7 @@ const saleRoutes = require('./routes/saleRoutes');
 const customerRoutes = require('./routes/customerRoutes');
 const expenseRoutes = require('./routes/expenseRoutes');
 const stockAdjustmentRoutes = require('./routes/stockAdjustmentRoutes');
+const inventoryRoutes = require('./routes/inventoryRoutes');
 const companyRoutes = require('./routes/companyRoutes');
 const userRoutes = require('./routes/userRoutes');
 const roleRoutes = require('./routes/roleRoutes');
@@ -54,6 +55,7 @@ app.get('/api/health', (req, res) => {
 app.use('/api', categoryRoutes);
 app.use('/api', productRoutes);
 app.use('/api', stockAdjustmentRoutes);
+app.use('/api', inventoryRoutes);
 
 // Supplier and purchase modules
 app.use('/api', supplierRoutes);

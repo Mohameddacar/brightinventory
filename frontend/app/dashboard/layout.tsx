@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { usePathname, useRouter } from "next/navigation"
+import { useRouter } from "next/navigation"
 import { hasAuthSession } from "@/lib/auth"
 
 export default function DashboardLayout({
@@ -10,20 +10,22 @@ export default function DashboardLayout({
   children: React.ReactNode
 }) {
   const router = useRouter()
-  const pathname = usePathname()
-  const [ready, setReady] = React.useState(false)
+  const [isAuthorized, setIsAuthorized] = React.useState(false)
+  const [isChecked, setIsChecked] = React.useState(false)
 
   React.useEffect(() => {
     if (!hasAuthSession()) {
       router.replace("/")
+      setIsChecked(true)
       return
     }
 
-    setReady(true)
-  }, [router, pathname])
+    setIsAuthorized(true)
+    setIsChecked(true)
+  }, [router])
 
-  if (!ready) {
-    return <div className="min-h-screen bg-[#eef4ff]" />
+  if (!isChecked || !isAuthorized) {
+    return null
   }
 
   return <>{children}</>

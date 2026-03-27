@@ -186,7 +186,15 @@ export default function Page() {
           {!canViewDashboard ? (
             <Card className="rounded-2xl border border-[#E2E8F0] bg-white shadow-md">
               <CardContent className="py-12 text-center text-sm text-[#64748B]">
-                You do not have permission to view dashboard analytics.
+                You do not have permission to view the dashboard.
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {canViewDashboard && !canViewAnalytics ? (
+            <Card className="rounded-2xl border border-[#E2E8F0] bg-white shadow-md">
+              <CardContent className="py-12 text-center text-sm text-[#64748B]">
+                You can access the dashboard menu, but analytics widgets are restricted for your role.
               </CardContent>
             </Card>
           ) : null}

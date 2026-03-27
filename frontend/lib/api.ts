@@ -1,6 +1,44 @@
 const API_BASE_URL = "http://localhost:5000/api"
 const AUTH_TOKEN_STORAGE_KEY = "ims_auth_token"
 
+const handleUnauthorized = () => {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY)
+  window.sessionStorage.removeItem(AUTH_TOKEN_STORAGE_KEY)
+  window.localStorage.removeItem("ims_active_user_id")
+  window.sessionStorage.removeItem("ims_active_user_id")
+  window.localStorage.removeItem("ims_active_user_profile")
+  window.sessionStorage.removeItem("ims_active_user_profile")
+  document.cookie = "ims_token=; Path=/; Max-Age=0; SameSite=Lax"
+
+  if (window.location.pathname !== "/") {
+    window.location.replace("/")
+  }
+}
+
+const getCookieValue = (key: string) => {
+  if (typeof document === "undefined") {
+    return null
+  }
+
+  const encodedKey = `${encodeURIComponent(key)}=`
+  const value = document.cookie
+    .split(";")
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(encodedKey))
+
+  if (!value) {
+    return null
+  }
+
+  const raw = value.slice(encodedKey.length)
+  const decoded = decodeURIComponent(raw).trim()
+  return decoded || null
+}
+
 const getAuthToken = () => {
   if (typeof window === "undefined") {
     return null
@@ -12,7 +50,11 @@ const getAuthToken = () => {
   }
 
   const sessionToken = window.sessionStorage.getItem(AUTH_TOKEN_STORAGE_KEY)
-  return sessionToken && sessionToken.trim() ? sessionToken.trim() : null
+  if (sessionToken && sessionToken.trim()) {
+    return sessionToken.trim()
+  }
+
+  return getCookieValue("ims_token")
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -34,6 +76,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
+    if (response.status === 401) {
+      handleUnauthorized()
+      throw new Error("Session expired. Please login again.")
+    }
+
     let errorMessage = "Request failed"
     try {
       const raw = await response.text()
@@ -80,6 +127,11 @@ async function requestBlob(path: string, options?: RequestInit): Promise<Blob> {
   }
 
   if (!response.ok) {
+    if (response.status === 401) {
+      handleUnauthorized()
+      throw new Error("Session expired. Please login again.")
+    }
+
     let errorMessage = "Request failed"
     try {
       const raw = await response.text()
@@ -131,6 +183,15 @@ export type SupplierApiPayload = {
   registered_date: string
 }
 
+export type SupplierPaymentApiPayload = {
+  supplier_id: number
+  purchase_id?: number | null
+  payment_mode: string
+  amount: number
+  payment_date: string
+  remarks?: string | null
+}
+
 export type SponsorApiPayload = {
   full_name: string
   gender?: string | null
@@ -151,6 +212,15 @@ export type CustomerApiPayload = {
   opening_balance?: number
   balance_type: "credit" | "debit"
   registered_date: string
+}
+
+export type CustomerReceiptApiPayload = {
+  customer_id: number
+  invoice_no: number
+  payment_mode: string
+  amount: number
+  remarks?: string | null
+  created_at: string
 }
 
 export type ExpenseTypeApiPayload = {
@@ -463,6 +533,54 @@ export type SalePaymentPayload = {
   remarks?: string | null
 }
 
+export type InventoryAdjustmentPayload = {
+  product_id: number
+  warehouse_id: number
+  adjustment_quantity: number
+  reason?: string | null
+}
+
+export type InventoryOverviewRow = {
+  id: number
+  product_id: number
+  product_name: string
+  product_code: string
+  stock_alert: number
+  warehouse_id: number
+  warehouse_name: string
+  quantity_on_hand: number
+  stock_status: "LOW" | "NORMAL"
+  updated_at: string
+}
+
+export type StockMovementRow = {
+  id: number
+  created_at: string
+  product_id: number
+  product_name: string
+  warehouse_id: number
+  warehouse_name: string
+  type: "IN" | "OUT" | "ADJUSTMENT"
+  quantity: number
+  reference_type: "PURCHASE" | "SALE" | "SALES_RETURN" | "PURCHASE_RETURN" | "ADJUSTMENT"
+  reference_id: number | null
+  note: string | null
+}
+
+export type ProductInventoryResponse = {
+  product: {
+    id: number
+    product_name: string
+    product_code: string
+  }
+  total_stock: number
+  by_warehouse: Array<{
+    warehouse_id: number
+    warehouse_name: string
+    quantity_on_hand: number
+  }>
+}
+
 export type PurchasePaymentPayload = {
   payment_date: string
   amount: number
@@ -601,6 +719,70 @@ export async function getSales<T = unknown>() {
   return request<T>("/sales")
 }
 
+export async function getInventoryOverview<T = InventoryOverviewRow[]>(params?: { search?: string; warehouse_id?: number }) {
+  const searchParams = new URLSearchParams()
+
+  if (params?.search?.trim()) {
+    searchParams.set("search", params.search.trim())
+  }
+
+  if (Number.isFinite(params?.warehouse_id) && Number(params?.warehouse_id) > 0) {
+    searchParams.set("warehouse_id", String(params?.warehouse_id))
+  }
+
+  const query = searchParams.toString()
+  return request<T>(`/inventory${query ? `?${query}` : ""}`)
+}
+
+export async function getStockMovements<T = PaginatedApiResponse<StockMovementRow>>(params?: {
+  page?: number
+  limit?: number
+  product_id?: number
+  type?: "IN" | "OUT" | "ADJUSTMENT"
+  start_date?: string
+  end_date?: string
+}) {
+  const searchParams = new URLSearchParams()
+
+  if (Number.isFinite(params?.page) && Number(params?.page) > 0) {
+    searchParams.set("page", String(params?.page))
+  }
+
+  if (Number.isFinite(params?.limit) && Number(params?.limit) > 0) {
+    searchParams.set("limit", String(params?.limit))
+  }
+
+  if (Number.isFinite(params?.product_id) && Number(params?.product_id) > 0) {
+    searchParams.set("product_id", String(params?.product_id))
+  }
+
+  if (params?.type) {
+    searchParams.set("type", params.type)
+  }
+
+  if (params?.start_date) {
+    searchParams.set("start_date", params.start_date)
+  }
+
+  if (params?.end_date) {
+    searchParams.set("end_date", params.end_date)
+  }
+
+  const query = searchParams.toString()
+  return request<T>(`/stock-movements${query ? `?${query}` : ""}`)
+}
+
+export async function getInventoryByProduct<T = ProductInventoryResponse>(id: number) {
+  return request<T>(`/inventory/product/${id}`)
+}
+
+export async function createStockAdjustment<T = unknown>(payload: InventoryAdjustmentPayload) {
+  return request<T>("/stock-adjustments", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
 export async function getSaleById<T = unknown>(id: number) {
   return request<T>(`/sales/${id}`)
 }
@@ -722,6 +904,17 @@ export async function deleteSupplier<T = unknown>(id: number) {
   })
 }
 
+export async function getSupplierPayments<T = unknown>() {
+  return request<T>("/supplier-payments")
+}
+
+export async function createSupplierPayment<T = unknown>(payload: SupplierPaymentApiPayload) {
+  return request<T>("/supplier-payments", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
 export async function getSponsors<T = unknown>() {
   return request<T>("/sponsors")
 }
@@ -767,6 +960,17 @@ export async function updateCustomer<T = unknown>(id: number, payload: CustomerA
 export async function deleteCustomer<T = unknown>(id: number) {
   return request<T>(`/customers/${id}`, {
     method: "DELETE",
+  })
+}
+
+export async function getCustomerReceipts<T = unknown>() {
+  return request<T>("/customer-receipts")
+}
+
+export async function createCustomerReceipt<T = unknown>(payload: CustomerReceiptApiPayload) {
+  return request<T>("/customer-receipts", {
+    method: "POST",
+    body: JSON.stringify(payload),
   })
 }
 

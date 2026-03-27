@@ -10,7 +10,6 @@ import {
   ArrowRightLeftIcon,
   WrenchIcon,
   TruckIcon,
-  HandCoinsIcon,
   ShoppingCartIcon,
   ShoppingBasketIcon,
   Undo2Icon,
@@ -139,6 +138,11 @@ const moduleSections: ModuleSection[] = [
     icon: <ArrowRightLeftIcon />,
     items: [
       {
+        title: "Inventory Overview",
+        url: "/dashboard/inventory",
+        icon: <BoxesIcon />,
+      },
+      {
         title: "Stock Movements",
         url: "/dashboard/stock-movements",
         icon: <ArrowRightLeftIcon />,
@@ -155,11 +159,6 @@ const moduleSections: ModuleSection[] = [
     icon: <TruckIcon />,
     items: [
       { title: "Suppliers", url: "/dashboard/suppliers", icon: <TruckIcon /> },
-      {
-        title: "Supplier Payments",
-        url: "/dashboard/supplier-payments",
-        icon: <HandCoinsIcon />,
-      },
     ],
   },
   {
@@ -190,11 +189,6 @@ const moduleSections: ModuleSection[] = [
     items: [
       { title: "Sponsors", url: "/dashboard/sponsors", icon: <UserRoundCheckIcon /> },
       { title: "Customers", url: "/dashboard/customers", icon: <UsersIcon /> },
-      {
-        title: "Customer Receipts",
-        url: "/dashboard/customer-receipts",
-        icon: <ReceiptTextIcon />,
-      },
     ],
   },
   {

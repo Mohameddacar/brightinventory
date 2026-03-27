@@ -7,7 +7,10 @@ import { LayoutFooter } from "@/components/layout/footer"
 import { SiteHeader } from "@/components/site-header"
 import {
   createSupplier,
+  createSupplierPayment,
   deleteSupplier,
+  getPurchases,
+  getSupplierPayments,
   getSuppliers,
   updateSupplier,
   type SupplierApiPayload,
@@ -33,6 +36,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -51,6 +61,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   EyeIcon,
@@ -58,6 +69,7 @@ import {
   PlusIcon,
   SearchIcon,
   TrashIcon,
+  WalletCardsIcon,
 } from "lucide-react"
 import type { CSSProperties } from "react"
 
@@ -73,6 +85,45 @@ type ApiSupplier = {
   created_at: string
 }
 
+type ApiPurchase = {
+  id: number
+  transaction_number: string
+  supplier_id: number
+  purchase_date: string
+  grand_total: string | number
+  paid: string | number
+  rest: string | number
+}
+
+type ApiSupplierPayment = {
+  id: number
+  supplier_id: number
+  purchase_id: number | null
+  payment_mode: string
+  amount: string | number
+  remarks: string | null
+  payment_date: string
+}
+
+type PurchasePaymentStatus = "not-paid" | "partial" | "full-paid"
+
+type SupplierPurchaseSummary = ApiPurchase & {
+  initialPaidAmount: number
+  paidThroughPayments: number
+  totalPaidAmount: number
+  effectiveOutstanding: number
+  paymentStatus: PurchasePaymentStatus
+}
+
+type SupplierActionKey = "supplier-detail" | "edit-supplier" | "delete-supplier" | "supplier-payments"
+
+type SupplierAction = {
+  key: SupplierActionKey
+  label: string
+  icon: React.ComponentType<{ className?: string }>
+  isDanger?: boolean
+}
+
 type SupplierForm = {
   full_name: string
   mobile_no: string
@@ -83,10 +134,26 @@ type SupplierForm = {
   balance_type: "credit" | "debit" | "none"
 }
 
+type SupplierPaymentForm = {
+  purchase_id: string
+  payment_date: string
+  payment_mode: string
+  cash_amount: string
+  amount: string
+  remarks: string
+}
+
 const PAGE_SIZE = 10
 const NAME_PATTERN = /^[A-Za-z][A-Za-z\s'.-]*$/
 const MOBILE_PATTERN = /^[+0-9][0-9\-\s]{6,29}$/
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+const ACTION_ITEMS: SupplierAction[] = [
+  { key: "supplier-detail", label: "Supplier Details", icon: EyeIcon },
+  { key: "edit-supplier", label: "Edit Supplier", icon: PencilIcon },
+  { key: "supplier-payments", label: "Supplier Payments", icon: WalletCardsIcon },
+  { key: "delete-supplier", label: "Delete Supplier", icon: TrashIcon, isDanger: true },
+]
 
 const emptyForm: SupplierForm = {
   full_name: "",
@@ -98,23 +165,66 @@ const emptyForm: SupplierForm = {
   balance_type: "none",
 }
 
+const getDefaultPaymentForm = (purchase?: SupplierPurchaseSummary | null): SupplierPaymentForm => ({
+  purchase_id: purchase ? String(purchase.id) : "",
+  payment_date: new Date().toISOString().slice(0, 16),
+  payment_mode: "cash",
+  cash_amount: purchase ? String(purchase.effectiveOutstanding.toFixed(2)) : "0",
+  amount: purchase ? String(purchase.effectiveOutstanding.toFixed(2)) : "0",
+  remarks: "",
+})
+
+function toNumber(value: string | number | null | undefined) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function formatCurrency(value: string | number | null | undefined) {
+  return `$${toNumber(value).toFixed(2)}`
+}
+
+function formatDate(value: string) {
+  return new Date(value).toLocaleDateString("en-CA")
+}
+
+function getPurchasePaymentStatus(outstanding: number, totalPaid: number): PurchasePaymentStatus {
+  if (outstanding <= 0) {
+    return "full-paid"
+  }
+
+  if (totalPaid <= 0) {
+    return "not-paid"
+  }
+
+  return "partial"
+}
+
 export default function SuppliersPage() {
   const [suppliers, setSuppliers] = React.useState<ApiSupplier[]>([])
+  const [purchases, setPurchases] = React.useState<ApiPurchase[]>([])
+  const [supplierPayments, setSupplierPayments] = React.useState<ApiSupplierPayment[]>([])
+
   const [searchTerm, setSearchTerm] = React.useState("")
   const [page, setPage] = React.useState(1)
 
   const [isAddOpen, setIsAddOpen] = React.useState(false)
   const [isViewOpen, setIsViewOpen] = React.useState(false)
   const [isEditOpen, setIsEditOpen] = React.useState(false)
+  const [isPaymentsOpen, setIsPaymentsOpen] = React.useState(false)
+  const [isAddPaymentOpen, setIsAddPaymentOpen] = React.useState(false)
   const [deleteId, setDeleteId] = React.useState<number | null>(null)
 
   const [selectedSupplier, setSelectedSupplier] = React.useState<ApiSupplier | null>(null)
   const [addForm, setAddForm] = React.useState<SupplierForm>(emptyForm)
   const [editForm, setEditForm] = React.useState<SupplierForm>(emptyForm)
+  const [paymentForm, setPaymentForm] = React.useState<SupplierPaymentForm>(getDefaultPaymentForm())
 
   const [loading, setLoading] = React.useState(true)
+  const [financeLoading, setFinanceLoading] = React.useState(true)
+  const [paymentSubmitLoading, setPaymentSubmitLoading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [formError, setFormError] = React.useState<string | null>(null)
+  const [paymentError, setPaymentError] = React.useState<string | null>(null)
 
   const loadSuppliers = React.useCallback(async () => {
     setLoading(true)
@@ -130,9 +240,28 @@ export default function SuppliersPage() {
     }
   }, [])
 
+  const loadFinanceData = React.useCallback(async () => {
+    setFinanceLoading(true)
+
+    try {
+      const [purchaseData, paymentData] = await Promise.all([
+        getPurchases<ApiPurchase[]>(),
+        getSupplierPayments<ApiSupplierPayment[]>(),
+      ])
+
+      setPurchases(Array.isArray(purchaseData) ? purchaseData : [])
+      setSupplierPayments(Array.isArray(paymentData) ? paymentData : [])
+    } catch {
+      // Finance sub-panels remain available with currently loaded data.
+    } finally {
+      setFinanceLoading(false)
+    }
+  }, [])
+
   React.useEffect(() => {
-    loadSuppliers()
-  }, [loadSuppliers])
+    void loadSuppliers()
+    void loadFinanceData()
+  }, [loadSuppliers, loadFinanceData])
 
   const filteredSuppliers = React.useMemo(() => {
     const query = searchTerm.trim().toLowerCase()
@@ -156,6 +285,91 @@ export default function SuppliersPage() {
     const start = (currentPage - 1) * PAGE_SIZE
     return filteredSuppliers.slice(start, start + PAGE_SIZE)
   }, [filteredSuppliers, currentPage])
+
+  const selectedSupplierPurchases = React.useMemo(() => {
+    if (!selectedSupplier) {
+      return []
+    }
+
+    return purchases
+      .filter((item) => Number(item.supplier_id) === Number(selectedSupplier.id))
+      .sort((a, b) => new Date(b.purchase_date).getTime() - new Date(a.purchase_date).getTime())
+  }, [purchases, selectedSupplier])
+
+  const selectedSupplierPayments = React.useMemo(() => {
+    if (!selectedSupplier) {
+      return []
+    }
+
+    return supplierPayments
+      .filter((item) => Number(item.supplier_id) === Number(selectedSupplier.id))
+      .sort((a, b) => new Date(b.payment_date).getTime() - new Date(a.payment_date).getTime())
+  }, [supplierPayments, selectedSupplier])
+
+  const selectedSupplierPaymentsByPurchaseId = React.useMemo(() => {
+    const totals = new Map<number, number>()
+
+    for (const payment of selectedSupplierPayments) {
+      if (!payment.purchase_id) {
+        continue
+      }
+
+      const purchaseId = Number(payment.purchase_id)
+      const current = totals.get(purchaseId) || 0
+      totals.set(purchaseId, current + toNumber(payment.amount))
+    }
+
+    return totals
+  }, [selectedSupplierPayments])
+
+  const selectedSupplierPurchaseSummaries = React.useMemo<SupplierPurchaseSummary[]>(() => {
+    return selectedSupplierPurchases.map((purchase) => {
+      const grandTotal = toNumber(purchase.grand_total)
+      const rawDue = toNumber(purchase.rest)
+      const baseDue = Math.max(0, rawDue)
+      const initialPaidAmount = Math.max(0, grandTotal - baseDue)
+      const paidThroughPayments = selectedSupplierPaymentsByPurchaseId.get(Number(purchase.id)) || 0
+      const totalPaidAmount = Math.min(grandTotal, initialPaidAmount + paidThroughPayments)
+      const effectiveOutstanding = Math.max(0, grandTotal - totalPaidAmount)
+      const paymentStatus = getPurchasePaymentStatus(effectiveOutstanding, totalPaidAmount)
+
+      return {
+        ...purchase,
+        initialPaidAmount,
+        paidThroughPayments,
+        totalPaidAmount,
+        effectiveOutstanding,
+        paymentStatus,
+      }
+    })
+  }, [selectedSupplierPurchases, selectedSupplierPaymentsByPurchaseId])
+
+  const selectedSupplierOutstandingPurchases = React.useMemo(() => {
+    return selectedSupplierPurchaseSummaries.filter((item) => item.effectiveOutstanding > 0)
+  }, [selectedSupplierPurchaseSummaries])
+
+  const selectedSupplierOutstandingTotal = React.useMemo(() => {
+    return selectedSupplierOutstandingPurchases.reduce(
+      (sum, item) => sum + item.effectiveOutstanding,
+      0
+    )
+  }, [selectedSupplierOutstandingPurchases])
+
+  const selectedInvoice = React.useMemo<SupplierPurchaseSummary | null>(() => {
+    if (!paymentForm.purchase_id) {
+      return null
+    }
+
+    return (
+      selectedSupplierOutstandingPurchases.find(
+        (item) => Number(item.id) === Number(paymentForm.purchase_id)
+      ) || null
+    )
+  }, [selectedSupplierOutstandingPurchases, paymentForm.purchase_id])
+
+  const purchaseById = React.useMemo(() => {
+    return new Map(selectedSupplierPurchaseSummaries.map((item) => [Number(item.id), item]))
+  }, [selectedSupplierPurchaseSummaries])
 
   const buildPayload = (form: SupplierForm): SupplierApiPayload => {
     return {
@@ -294,6 +508,139 @@ export default function SuppliersPage() {
     setIsEditOpen(true)
   }
 
+  const openPaymentsModal = async (supplier: ApiSupplier) => {
+    setSelectedSupplier(supplier)
+    setPaymentError(null)
+    setIsPaymentsOpen(true)
+    await loadFinanceData()
+  }
+
+  const openAddPaymentModal = (supplier: ApiSupplier) => {
+    const duePurchases = selectedSupplierPurchaseSummaries
+      .filter((item) => Number(item.supplier_id) === Number(supplier.id) && item.effectiveOutstanding > 0)
+      .sort((a, b) => new Date(b.purchase_date).getTime() - new Date(a.purchase_date).getTime())
+
+    const firstDuePurchase = duePurchases[0] || null
+
+    setSelectedSupplier(supplier)
+    setPaymentError(null)
+    setPaymentForm(getDefaultPaymentForm(firstDuePurchase))
+    setIsAddPaymentOpen(true)
+  }
+
+  const handleSupplierActionClick = async (action: SupplierAction, supplier: ApiSupplier) => {
+    if (action.key === "supplier-detail") {
+      openViewModal(supplier)
+      return
+    }
+
+    if (action.key === "edit-supplier") {
+      openEditModal(supplier)
+      return
+    }
+
+    if (action.key === "delete-supplier") {
+      setDeleteId(supplier.id)
+      return
+    }
+
+    if (action.key === "supplier-payments") {
+      await openPaymentsModal(supplier)
+    }
+  }
+
+  const handleSupplierPaymentSubmit = async () => {
+    if (!selectedSupplier) {
+      return
+    }
+
+    const selectedPurchaseId = Number(paymentForm.purchase_id)
+    if (!selectedPurchaseId) {
+      const message = "Invoice number is required."
+      setPaymentError(message)
+      appNotify.failed("Add Supplier Payment", message)
+      return
+    }
+
+    if (!paymentForm.payment_date) {
+      const message = "Payment date is required."
+      setPaymentError(message)
+      appNotify.failed("Add Supplier Payment", message)
+      return
+    }
+
+    const paymentAmount = toNumber(paymentForm.amount)
+    if (paymentAmount <= 0) {
+      const message = "Payment amount must be greater than 0."
+      setPaymentError(message)
+      appNotify.failed("Add Supplier Payment", message)
+      return
+    }
+
+    const cashAmount = toNumber(paymentForm.cash_amount)
+    if (cashAmount < 0) {
+      const message = "Cash amount cannot be negative."
+      setPaymentError(message)
+      appNotify.failed("Add Supplier Payment", message)
+      return
+    }
+
+    if (cashAmount > paymentAmount) {
+      const message = "Cash amount cannot be greater than payment amount."
+      setPaymentError(message)
+      appNotify.failed("Add Supplier Payment", message)
+      return
+    }
+
+    const invoiceOutstanding = toNumber(selectedInvoice?.effectiveOutstanding)
+    if (selectedInvoice && paymentAmount > invoiceOutstanding) {
+      const message = `Payment amount cannot exceed outstanding balance (${formatCurrency(invoiceOutstanding)}).`
+      setPaymentError(message)
+      appNotify.failed("Add Supplier Payment", message)
+      return
+    }
+
+    if (selectedInvoice && selectedInvoice.paymentStatus === "full-paid") {
+      const message = "This invoice is already fully paid."
+      setPaymentError(message)
+      appNotify.failed("Add Supplier Payment", message)
+      return
+    }
+
+    setPaymentSubmitLoading(true)
+    setPaymentError(null)
+
+    try {
+      const remarksParts: string[] = []
+      if (cashAmount > 0) {
+        remarksParts.push(`Cash Amount: ${formatCurrency(cashAmount)}`)
+      }
+      if (paymentForm.remarks.trim()) {
+        remarksParts.push(paymentForm.remarks.trim())
+      }
+
+      await createSupplierPayment({
+        supplier_id: Number(selectedSupplier.id),
+        purchase_id: selectedPurchaseId,
+        payment_mode: paymentForm.payment_mode,
+        amount: paymentAmount,
+        payment_date: new Date(paymentForm.payment_date).toISOString(),
+        remarks: remarksParts.length > 0 ? remarksParts.join(" | ") : null,
+      })
+
+      setIsAddPaymentOpen(false)
+      setIsPaymentsOpen(true)
+      await Promise.all([loadSuppliers(), loadFinanceData()])
+      appNotify.completed("Supplier Payment", "Supplier payment submitted successfully.")
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to submit supplier payment"
+      setPaymentError(message)
+      appNotify.failed("Add Supplier Payment", message)
+    } finally {
+      setPaymentSubmitLoading(false)
+    }
+  }
+
   return (
     <SidebarProvider
       style={
@@ -313,7 +660,7 @@ export default function SuppliersPage() {
               <div>
                 <CardTitle className="text-lg">Suppliers</CardTitle>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Manage supplier records and balances.
+                  Manage supplier records, balances, and supplier payments.
                 </p>
                 {error ? <p className="mt-2 text-xs text-rose-600">{error}</p> : null}
                 {formError ? <p className="mt-1 text-xs text-rose-600">{formError}</p> : null}
@@ -373,36 +720,36 @@ export default function SuppliersPage() {
                         <TableCell>{row.mobile_no || "-"}</TableCell>
                         <TableCell>{row.email || "-"}</TableCell>
                         <TableCell>{row.address || "-"}</TableCell>
-                        <TableCell>${Number(row.opening_balance || 0).toFixed(2)}</TableCell>
+                        <TableCell>{formatCurrency(row.opening_balance || 0)}</TableCell>
                         <TableCell className="capitalize">{row.balance_type}</TableCell>
                         <TableCell>{new Date(row.registered_date).toLocaleDateString()}</TableCell>
                         <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => openViewModal(row)}
-                              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-zinc-100 hover:text-[#3FA3D3]"
-                              aria-label="View supplier"
-                            >
-                              <EyeIcon className="size-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => openEditModal(row)}
-                              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-zinc-100 hover:text-amber-600"
-                              aria-label="Edit supplier"
-                            >
-                              <PencilIcon className="size-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setDeleteId(row.id)}
-                              className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-zinc-100 hover:text-rose-600"
-                              aria-label="Delete supplier"
-                            >
-                              <TrashIcon className="size-4" />
-                            </button>
-                          </div>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger render={<Button className="bg-linear-to-r from-[#5ea5ff] to-[#3f83f8] text-white hover:from-[#4f97f6] hover:to-[#2f75eb]" />}>
+                              Action
+                              <ChevronDownIcon className="ml-1 size-4" />
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-56">
+                              {ACTION_ITEMS.map((action) => {
+                                const ActionIcon = action.icon
+
+                                return (
+                                  <React.Fragment key={action.key}>
+                                    {action.isDanger ? <DropdownMenuSeparator /> : null}
+                                    <DropdownMenuItem
+                                      variant={action.isDanger ? "destructive" : "default"}
+                                      onClick={() => {
+                                        void handleSupplierActionClick(action, row)
+                                      }}
+                                    >
+                                      <ActionIcon className="size-4" />
+                                      <span>{action.label}</span>
+                                    </DropdownMenuItem>
+                                  </React.Fragment>
+                                )
+                              })}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -560,29 +907,121 @@ export default function SuppliersPage() {
       </Dialog>
 
       <Dialog open={isViewOpen} onOpenChange={setIsViewOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-5xl">
           <DialogHeader>
             <DialogTitle>Supplier Details</DialogTitle>
-            <DialogDescription>Selected supplier information.</DialogDescription>
+            <DialogDescription>
+              Supplier profile, outstanding balances, and recent purchase activity.
+            </DialogDescription>
           </DialogHeader>
+
           {selectedSupplier ? (
-            <div className="grid gap-3 p-4 text-sm">
-              <p><span className="font-medium">Full Name:</span> {selectedSupplier.full_name}</p>
-              <p><span className="font-medium">Mobile Number:</span> {selectedSupplier.mobile_no || "-"}</p>
-              <p><span className="font-medium">Email:</span> {selectedSupplier.email || "-"}</p>
-              <p><span className="font-medium">Address:</span> {selectedSupplier.address || "-"}</p>
-              <p><span className="font-medium">Opening Balance:</span> ${Number(selectedSupplier.opening_balance || 0).toFixed(2)}</p>
-              <p><span className="font-medium">Balance Type:</span> {selectedSupplier.balance_type}</p>
-              <p><span className="font-medium">Registered Date:</span> {new Date(selectedSupplier.registered_date).toLocaleDateString()}</p>
+            <div className="space-y-4 p-2">
+              <div className="grid gap-4 md:grid-cols-3">
+                <div className="rounded-lg border p-3">
+                  <p className="mb-2 text-sm font-semibold">Supplier Info</p>
+                  <p className="text-sm font-medium">{selectedSupplier.full_name}</p>
+                  <p className="text-sm text-muted-foreground">{selectedSupplier.email || "-"}</p>
+                  <p className="text-sm text-muted-foreground">{selectedSupplier.mobile_no || "-"}</p>
+                  <p className="text-sm text-muted-foreground">{selectedSupplier.address || "-"}</p>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <p className="mb-2 text-sm font-semibold">Balance Overview</p>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span>Opening Balance</span>
+                      <span>{formatCurrency(selectedSupplier.opening_balance || 0)}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Balance Type</span>
+                      <span className="capitalize">{selectedSupplier.balance_type}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Outstanding Purchases</span>
+                      <span>{selectedSupplierOutstandingPurchases.length}</span>
+                    </div>
+                    <div className="flex items-center justify-between font-semibold text-rose-600">
+                      <span>Total Outstanding</span>
+                      <span>{formatCurrency(selectedSupplierOutstandingTotal)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <p className="mb-2 text-sm font-semibold">Supplier Meta</p>
+                  <p className="text-sm">Registered: {new Date(selectedSupplier.registered_date).toLocaleDateString()}</p>
+                  <p className="text-sm">Created: {new Date(selectedSupplier.created_at).toLocaleString()}</p>
+                  <p className="text-sm">Payment Records: {selectedSupplierPayments.length}</p>
+                </div>
+              </div>
+
+              <div className="rounded-lg border">
+                <div className="border-b px-4 py-3 text-sm font-semibold">Recent Purchases</div>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Invoice Number</TableHead>
+                      <TableHead>Purchase Date</TableHead>
+                      <TableHead>Grand Total</TableHead>
+                      <TableHead>Paid</TableHead>
+                      <TableHead>Due</TableHead>
+                      <TableHead>Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {selectedSupplierPurchaseSummaries.length > 0 ? (
+                      selectedSupplierPurchaseSummaries.slice(0, 5).map((purchase) => (
+                        <TableRow key={purchase.id}>
+                          <TableCell className="font-medium">{purchase.transaction_number}</TableCell>
+                          <TableCell>{new Date(purchase.purchase_date).toLocaleString()}</TableCell>
+                          <TableCell>{formatCurrency(purchase.grand_total)}</TableCell>
+                          <TableCell>{formatCurrency(purchase.totalPaidAmount)}</TableCell>
+                          <TableCell className="font-semibold text-rose-600">{formatCurrency(purchase.effectiveOutstanding)}</TableCell>
+                          <TableCell>
+                            <span
+                              className={
+                                purchase.paymentStatus === "full-paid"
+                                  ? "font-medium text-emerald-600"
+                                  : purchase.paymentStatus === "partial"
+                                    ? "font-medium text-amber-600"
+                                    : "font-medium text-rose-600"
+                              }
+                            >
+                              {purchase.paymentStatus === "full-paid"
+                                ? "Full Paid"
+                                : purchase.paymentStatus === "partial"
+                                  ? "Partial"
+                                  : "Not Paid"}
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={6} className="py-6 text-center text-muted-foreground">
+                          No purchases found for this supplier.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
           ) : null}
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsViewOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
       <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit Suppliers</DialogTitle>
+            <DialogTitle>Edit Supplier</DialogTitle>
             <DialogDescription>Update supplier details.</DialogDescription>
           </DialogHeader>
           <form onSubmit={handleEditSupplier} className="space-y-4 p-4">
@@ -681,6 +1120,259 @@ export default function SuppliersPage() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isPaymentsOpen} onOpenChange={setIsPaymentsOpen}>
+        <DialogContent className="max-w-5xl">
+          <DialogHeader>
+            <DialogTitle>Supplier Payments</DialogTitle>
+            <DialogDescription>
+              Review payment history and settle outstanding supplier balances.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 p-2">
+            {selectedSupplier ? (
+              <div className="rounded-lg border p-3 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="font-medium">Supplier: {selectedSupplier.full_name}</p>
+                    <p className="text-muted-foreground">Email: {selectedSupplier.email || "-"}</p>
+                  </div>
+                  <div className="text-right">
+                    <p>Outstanding Purchases: {selectedSupplierOutstandingPurchases.length}</p>
+                    <p className="font-semibold text-rose-600">Outstanding Balance: {formatCurrency(selectedSupplierOutstandingTotal)}</p>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="flex items-center justify-end">
+              <Button
+                type="button"
+                className="bg-[#3FA3D3] text-white hover:bg-[#53b2df]"
+                onClick={() => {
+                  if (!selectedSupplier) {
+                    return
+                  }
+                  openAddPaymentModal(selectedSupplier)
+                }}
+              >
+                <PlusIcon className="mr-1 size-4" />
+                Add Supplier Payment
+              </Button>
+            </div>
+
+            <div className="overflow-hidden rounded-lg border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Invoice Number</TableHead>
+                    <TableHead>Payment Method</TableHead>
+                    <TableHead>Amount</TableHead>
+                    <TableHead>Remarks / Notes</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {financeLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
+                        Loading supplier payments...
+                      </TableCell>
+                    </TableRow>
+                  ) : selectedSupplierPayments.length > 0 ? (
+                    selectedSupplierPayments.map((payment) => {
+                      const purchase = payment.purchase_id
+                        ? purchaseById.get(Number(payment.purchase_id))
+                        : null
+
+                      return (
+                        <TableRow key={payment.id}>
+                          <TableCell>{new Date(payment.payment_date).toLocaleString()}</TableCell>
+                          <TableCell>{purchase?.transaction_number || "-"}</TableCell>
+                          <TableCell className="capitalize">{payment.payment_mode || "cash"}</TableCell>
+                          <TableCell className="font-medium">{formatCurrency(payment.amount)}</TableCell>
+                          <TableCell>{payment.remarks || "-"}</TableCell>
+                        </TableRow>
+                      )
+                    })
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
+                        No supplier payment records yet.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsPaymentsOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isAddPaymentOpen} onOpenChange={setIsAddPaymentOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Add Supplier Payment</DialogTitle>
+            <DialogDescription>
+              Record a payment made to supplier for outstanding purchase invoices.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 p-2">
+            {paymentError ? <p className="text-sm text-rose-600">{paymentError}</p> : null}
+
+            <div className="rounded-md border p-3">
+              <p className="mb-2 text-sm font-semibold">Section 1: Invoice Information</p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Invoice Number</label>
+                  <Select
+                    value={paymentForm.purchase_id}
+                    onValueChange={(value) => {
+                      const invoice = selectedSupplierOutstandingPurchases.find(
+                        (item) => Number(item.id) === Number(value)
+                      )
+
+                      setPaymentForm((prev) => ({
+                        ...prev,
+                        purchase_id: value ? String(value) : "",
+                        amount: invoice ? String(invoice.effectiveOutstanding.toFixed(2)) : prev.amount,
+                        cash_amount: invoice ? String(invoice.effectiveOutstanding.toFixed(2)) : prev.cash_amount,
+                      }))
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select invoice" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {selectedSupplierOutstandingPurchases.length > 0 ? (
+                        selectedSupplierOutstandingPurchases.map((invoice) => (
+                          <SelectItem key={invoice.id} value={String(invoice.id)}>
+                            {invoice.transaction_number} - Due {formatCurrency(invoice.effectiveOutstanding)}
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <SelectItem value="none" disabled>
+                          No outstanding invoices
+                        </SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Purchase Date</label>
+                  <Input value={selectedInvoice ? new Date(selectedInvoice.purchase_date).toLocaleString() : "-"} readOnly />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-md border p-3">
+              <p className="mb-2 text-sm font-semibold">Section 2: Supplier Information</p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Supplier</label>
+                  <Input value={selectedSupplier?.full_name || "-"} readOnly />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Outstanding Balance</label>
+                  <Input value={formatCurrency(selectedInvoice?.effectiveOutstanding || 0)} readOnly />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-md border p-3">
+              <p className="mb-2 text-sm font-semibold">Section 3: Payment Information</p>
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Payment Method</label>
+                  <Select
+                    value={paymentForm.payment_mode}
+                    onValueChange={(value) => setPaymentForm((prev) => ({ ...prev, payment_mode: value || "cash" }))}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="cash">Cash</SelectItem>
+                      <SelectItem value="bank">Bank</SelectItem>
+                      <SelectItem value="mobile">Mobile</SelectItem>
+                      <SelectItem value="card">Card</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Cash Amount</label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={paymentForm.cash_amount}
+                    onChange={(e) => setPaymentForm((prev) => ({ ...prev, cash_amount: e.target.value }))}
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Payment Amount</label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={paymentForm.amount}
+                    onChange={(e) => setPaymentForm((prev) => ({ ...prev, amount: e.target.value }))}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-md border p-3">
+              <p className="mb-2 text-sm font-semibold">Section 4: Additional Information</p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Payment Date</label>
+                  <Input
+                    type="datetime-local"
+                    value={paymentForm.payment_date}
+                    onChange={(e) => setPaymentForm((prev) => ({ ...prev, payment_date: e.target.value }))}
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Remarks / Notes</label>
+                  <Input
+                    value={paymentForm.remarks}
+                    placeholder="Optional"
+                    onChange={(e) => setPaymentForm((prev) => ({ ...prev, remarks: e.target.value }))}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setIsAddPaymentOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-[#3FA3D3] text-white hover:bg-[#53b2df]"
+              onClick={handleSupplierPaymentSubmit}
+              disabled={paymentSubmitLoading || selectedSupplierOutstandingPurchases.length === 0}
+            >
+              {paymentSubmitLoading ? "Saving..." : "Submit Payment"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

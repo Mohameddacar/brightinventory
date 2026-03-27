@@ -67,7 +67,7 @@ export function LayoutHeader() {
 
           <div className="flex items-center gap-2 rounded-xl border px-2 py-1.5 shadow-sm">
             <Avatar className="size-8">
-              <AvatarImage src="/avatars/eng-dacar.png" alt="eng Dacar" />
+              <AvatarImage src="/magic.jpg" alt={profileName} />
               <AvatarFallback>{profileName.slice(0, 2).toUpperCase()}</AvatarFallback>
             </Avatar>
             <div className="hidden text-right leading-tight sm:block">

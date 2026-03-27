@@ -1,6 +1,7 @@
 const { PrismaClient } = require('@prisma/client');
 const { PrismaPg } = require('@prisma/adapter-pg');
 const { Pool } = require('pg');
+const { ensureInventorySchema, applyMovementBatch, resolveWarehouseId } = require('./InventoryServices');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
@@ -11,6 +12,28 @@ const toNumber = (value, fallback = 0) => {
 };
 
 let purchaseSchemaReady = false;
+
+const normalizePurchaseItems = (items) => {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items.map((item) => {
+    const quantity = Math.max(1, Number(item.quantity || 1));
+    const unitCost = Number(item.unit_cost || 0);
+    const tax = Number(item.tax || 0);
+    const discount = Number(item.discount || 0);
+
+    return {
+      product_id: Number(item.product_id),
+      quantity,
+      unit_cost: unitCost,
+      tax,
+      discount,
+      subtotal: Math.max(0, quantity * unitCost + tax - discount),
+    };
+  });
+};
 
 const ensurePurchaseSchema = async () => {
   if (purchaseSchemaReady) {
@@ -270,6 +293,8 @@ const ensurePurchaseSchema = async () => {
     $$;
   `);
 
+  await ensureInventorySchema();
+
   purchaseSchemaReady = true;
 };
 
@@ -277,36 +302,115 @@ const createPurchase = async (purchaseData) => {
   await ensurePurchaseSchema();
 
   if (Array.isArray(purchaseData.items)) {
-    const {
-      supplier_id,
-      warehouse_id,
-      purchase_date,
-      order_tax,
-      discount,
-      discount_type,
-      shipping,
-      notes,
-      created_by,
-      purchase_code,
-      items,
-    } = purchaseData;
+    const normalizedItems = normalizePurchaseItems(purchaseData.items);
+    const orderTax = Number(purchaseData.order_tax || 0);
+    const shipping = Number(purchaseData.shipping || 0);
+    const discountInput = Number(purchaseData.discount || 0);
+    const discountType = String(purchaseData.discount_type || 'fixed').toLowerCase() === 'percent' ? 'percent' : 'fixed';
+    const itemsTotal = normalizedItems.reduce((sum, item) => sum + item.subtotal, 0);
+    const orderDiscount = discountType === 'percent' ? (itemsTotal * discountInput) / 100 : discountInput;
+    const grandTotal = Math.max(0, itemsTotal + orderTax + shipping - orderDiscount);
+    const paid = Math.max(0, Number(purchaseData.paid ?? 0));
+    const rest = Math.max(0, grandTotal - paid);
+    const purchaseDate = purchaseData.purchase_date ? new Date(purchaseData.purchase_date) : new Date();
+    const purchaseCode = String(purchaseData.purchase_code || '').trim() || `PUR-${Date.now()}`;
 
     return prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`
-        CALL create_purchase_with_items(
-          ${Number(supplier_id)},
-          ${Number(warehouse_id)},
-          ${new Date(purchase_date)},
-          ${Number(order_tax ?? 0)},
-          ${Number(discount ?? 0)},
-          ${String(discount_type || 'fixed')},
-          ${Number(shipping ?? 0)},
-          ${notes ?? null},
-          ${created_by ? Number(created_by) : null},
-          CAST(${JSON.stringify(items)} AS jsonb),
-          ${purchase_code ?? null}
-        )
+      const warehouseId = await resolveWarehouseId(tx, purchaseData.warehouse_id);
+
+      const createdRows = await tx.$queryRaw`
+        INSERT INTO purchases (
+          transaction_number,
+          purchase_code,
+          supplier_id,
+          warehouse_id,
+          purchase_date,
+          payment_mode,
+          cash_amount,
+          total,
+          order_tax,
+          discount,
+          discount_type,
+          shipping,
+          total_amount,
+          grand_total,
+          paid,
+          rest,
+          notes,
+          created_by,
+          created_at,
+          updated_at
+        ) VALUES (
+          ${purchaseCode},
+          ${purchaseCode},
+          ${Number(purchaseData.supplier_id)},
+          ${warehouseId},
+          ${purchaseDate},
+          ${String(purchaseData.payment_mode || 'cash')},
+          ${paid},
+          ${itemsTotal},
+          ${orderTax},
+          ${discountInput},
+          ${discountType},
+          ${shipping},
+          ${itemsTotal},
+          ${grandTotal},
+          ${paid},
+          ${rest},
+          ${purchaseData.notes ?? null},
+          ${purchaseData.created_by ? Number(purchaseData.created_by) : null},
+          NOW(),
+          NOW()
+        ) RETURNING id
       `;
+
+      const purchaseId = Number(createdRows[0].id);
+
+      for (const item of normalizedItems) {
+        await tx.$executeRaw`
+          INSERT INTO purchase_items (
+            purchase_id,
+            product_id,
+            cost,
+            unit_cost,
+            quantity,
+            price,
+            amount,
+            discount,
+            tax,
+            subtotal,
+            created_at,
+            updated_at
+          ) VALUES (
+            ${purchaseId},
+            ${item.product_id},
+            ${item.unit_cost},
+            ${item.unit_cost},
+            ${item.quantity},
+            ${item.unit_cost},
+            ${item.subtotal},
+            ${item.discount},
+            ${item.tax},
+            ${item.subtotal},
+            NOW(),
+            NOW()
+          )
+        `;
+      }
+
+      await applyMovementBatch(
+        tx,
+        normalizedItems.map((item) => ({
+          product_id: item.product_id,
+          warehouse_id: warehouseId,
+          delta: item.quantity,
+          movement_type: 'IN',
+          movement_quantity: item.quantity,
+          reference_type: 'PURCHASE',
+          reference_id: purchaseId,
+          note: `Purchase ${purchaseCode}`,
+        }))
+      );
     });
   }
 
@@ -343,21 +447,7 @@ const updatePurchase = async (id, purchaseData) => {
   await ensurePurchaseSchema();
 
   const purchaseId = Number(id);
-  const normalizedItems = (purchaseData.items || []).map((item) => {
-    const quantity = Math.max(1, Number(item.quantity || 1));
-    const unitCost = Number(item.unit_cost || 0);
-    const tax = Number(item.tax || 0);
-    const discount = Number(item.discount || 0);
-
-    return {
-      product_id: Number(item.product_id),
-      quantity,
-      unit_cost: unitCost,
-      tax,
-      discount,
-      subtotal: Math.max(0, quantity * unitCost + tax - discount),
-    };
-  });
+  const normalizedItems = normalizePurchaseItems(purchaseData.items || []);
 
   const itemsTotal = normalizedItems.reduce((sum, item) => sum + item.subtotal, 0);
   const orderTax = Number(purchaseData.order_tax || 0);
@@ -369,7 +459,7 @@ const updatePurchase = async (id, purchaseData) => {
 
   await prisma.$transaction(async (tx) => {
     const existingPurchase = await tx.$queryRaw`
-      SELECT id, paid
+      SELECT id, paid, warehouse_id, transaction_number
       FROM purchases
       WHERE id = ${purchaseId}
       LIMIT 1
@@ -385,6 +475,9 @@ const updatePurchase = async (id, purchaseData) => {
       WHERE purchase_id = ${purchaseId}
     `;
 
+    const existingWarehouseId = await resolveWarehouseId(tx, existingPurchase[0].warehouse_id);
+    const nextWarehouseId = await resolveWarehouseId(tx, purchaseData.warehouse_id ?? existingWarehouseId);
+
     const previousQtyByProduct = new Map();
     existingItems.forEach((row) => {
       const productId = Number(row.product_id);
@@ -397,23 +490,56 @@ const updatePurchase = async (id, purchaseData) => {
       newQtyByProduct.set(item.product_id, (newQtyByProduct.get(item.product_id) || 0) + item.quantity);
     });
 
+    const movementOps = [];
     const productIds = new Set([...previousQtyByProduct.keys(), ...newQtyByProduct.keys()]);
 
     for (const productId of productIds) {
       const prevQty = previousQtyByProduct.get(productId) || 0;
       const nextQty = newQtyByProduct.get(productId) || 0;
-      const delta = nextQty - prevQty;
 
-      if (delta !== 0) {
-        await tx.$executeRaw`
-          UPDATE products
-          SET
-            current_stock = GREATEST(0, COALESCE(current_stock, 0) + ${delta}),
-            updated_at = NOW()
-          WHERE id = ${productId}
-        `;
+      if (existingWarehouseId === nextWarehouseId) {
+        const delta = nextQty - prevQty;
+        if (delta !== 0) {
+          movementOps.push({
+            product_id: productId,
+            warehouse_id: nextWarehouseId,
+            delta,
+            movement_type: delta > 0 ? 'IN' : 'OUT',
+            movement_quantity: Math.abs(delta),
+            reference_type: 'PURCHASE',
+            reference_id: purchaseId,
+            note: `Purchase update ${existingPurchase[0].transaction_number}`,
+          });
+        }
+      } else {
+        if (prevQty > 0) {
+          movementOps.push({
+            product_id: productId,
+            warehouse_id: existingWarehouseId,
+            delta: -prevQty,
+            movement_type: 'OUT',
+            movement_quantity: prevQty,
+            reference_type: 'PURCHASE',
+            reference_id: purchaseId,
+            note: `Purchase warehouse transfer out ${existingPurchase[0].transaction_number}`,
+          });
+        }
+        if (nextQty > 0) {
+          movementOps.push({
+            product_id: productId,
+            warehouse_id: nextWarehouseId,
+            delta: nextQty,
+            movement_type: 'IN',
+            movement_quantity: nextQty,
+            reference_type: 'PURCHASE',
+            reference_id: purchaseId,
+            note: `Purchase warehouse transfer in ${existingPurchase[0].transaction_number}`,
+          });
+        }
       }
     }
+
+    await applyMovementBatch(tx, movementOps);
 
     await tx.$executeRaw`
       DELETE FROM purchase_items
@@ -459,7 +585,7 @@ const updatePurchase = async (id, purchaseData) => {
       UPDATE purchases
       SET
         supplier_id = ${Number(purchaseData.supplier_id)},
-        warehouse_id = ${Number(purchaseData.warehouse_id)},
+        warehouse_id = ${nextWarehouseId},
         purchase_date = ${new Date(purchaseData.purchase_date)},
         payment_mode = ${String(purchaseData.payment_mode || 'cash')},
         cash_amount = ${paid},

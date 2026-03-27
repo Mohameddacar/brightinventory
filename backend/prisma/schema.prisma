@@ -6,17 +6,6 @@ datasource db {
   provider = "postgresql"
 }
 
-enum BalanceType {
-  credit
-  debit
-  none
-}
-
-enum AdjustmentType {
-  increase
-  decrease
-}
-
 model companies {
   id           Int      @id @default(autoincrement())
   company_name String
@@ -29,125 +18,142 @@ model companies {
 }
 
 model users {
-  id         Int      @id @default(autoincrement())
-  name       String
-  email      String   @unique
-  password   String
-  role_id    Int
-  phone      String?
-  status     Boolean  @default(true)
-  created_at DateTime @default(now())
-
-  role roles @relation(fields: [role_id], references: [id])
-
-  audit_logs  audit_logs[]
-  report_logs report_logs[]
+  id                       Int                       @id @default(autoincrement())
+  name                     String
+  email                    String                    @unique
+  password                 String
+  role_id                  Int
+  phone                    String?
+  status                   Boolean                   @default(true)
+  created_at               DateTime                  @default(now())
+  audit_logs               audit_logs[]
+  report_logs              report_logs[]
+  user_permission_profiles user_permission_profiles?
+  user_permissions         user_permissions[]
+  role                     roles                     @relation(fields: [role_id], references: [id])
 }
 
 model roles {
-  id          Int     @id @default(autoincrement())
-  role_name   String
-  description String?
-
-  users            users[]
+  id               Int                @id @default(autoincrement())
+  role_name        String
+  description      String?
   role_permissions role_permissions[]
+  users            users[]
 }
 
 model permissions {
-  id              Int    @id @default(autoincrement())
-  module          String
-  permission_name String
-
+  id               Int                @id @default(autoincrement())
+  module           String
+  permission_name  String
   role_permissions role_permissions[]
+  user_permissions user_permissions[]
 }
 
 model role_permissions {
-  id            Int @id @default(autoincrement())
+  id            Int         @id @default(autoincrement())
   role_id       Int
   permission_id Int
-
-  role       roles       @relation(fields: [role_id], references: [id])
-  permission permissions @relation(fields: [permission_id], references: [id])
+  permission    permissions @relation(fields: [permission_id], references: [id])
+  role          roles       @relation(fields: [role_id], references: [id])
 }
 
 model categories {
-  id            Int       @id @default(autoincrement())
+  id            Int        @id @default(autoincrement())
   category_name String
-  description   String?
-  created_at    DateTime  @default(now())
+  created_at    DateTime   @default(now())
   updated_at    DateTime?
-
-  products products[]
+  description   String?
+  products      products[]
 }
 
 model products {
-  id               Int       @id @default(autoincrement())
-  category_id      Int
-  product_code     String
-  product_name     String
-  description      String?
-  image            String?
-  has_expire_date  Boolean   @default(false)
-  expire_date      DateTime?
-  opening_quantity Int
-  minimum_sale_quantity Int  @default(0)
-  stock_alert      Int       @default(0)
-  purchase_cost    Decimal
-  sale_cost        Decimal
-  reorder_level    Int
-  created_at       DateTime  @default(now())
-
-  category categories @relation(fields: [category_id], references: [id])
-
+  id                    Int                     @id @default(autoincrement())
+  category_id           Int
+  product_code          String
+  product_name          String
+  description           String?
+  image                 String?
+  has_expire_date       Boolean                 @default(false)
+  expire_date           DateTime?
+  opening_quantity      Int
+  purchase_cost         Decimal
+  sale_cost             Decimal
+  reorder_level         Int
+  created_at            DateTime                @default(now())
+  minimum_sale_quantity Int                     @default(0)
+  stock_alert           Int                     @default(0)
+  product_barcode       String?                 @db.VarChar(120)
+  cost_price            Decimal?                @db.Decimal(18, 2)
+  selling_price         Decimal?                @db.Decimal(18, 2)
+  current_stock         Int?                    @default(0)
+  updated_at            DateTime?               @default(now()) @db.Timestamptz(6)
+  inventory_records     inventory[]
+  category              categories              @relation(fields: [category_id], references: [id])
   purchase_items        purchase_items[]
-  sale_items            sale_items[]
   purchase_return_items purchase_return_items[]
+  sale_items            sale_items[]
   sales_return_items    sales_return_items[]
   stock_adjustments     stock_adjustments[]
+  stock_movements       stock_movements[]
+
+  @@index([product_barcode], map: "idx_products_product_barcode")
+  @@index([product_code], map: "idx_products_product_code")
+}
+
+model warehouses {
+  id              Int               @id @default(autoincrement())
+  warehouse_name  String            @db.VarChar(120)
+  location        String?           @db.VarChar(255)
+  created_at      DateTime?         @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime?         @default(now()) @updatedAt @db.Timestamptz(6)
+  inventory       inventory[]
+  purchases       purchases[]
+  sales           sales[]
+  stock_movements stock_movements[]
 }
 
 model suppliers {
-  id              Int         @id @default(autoincrement())
-  full_name       String
-  address         String?
-  mobile_no       String?
-  email           String?
-  opening_balance Decimal?
-  balance_type    BalanceType
-  registered_date DateTime
-  created_at      DateTime    @default(now())
-
-  supplier_payments supplier_payments[]
-  purchases         purchases[]
+  id                Int                 @id @default(autoincrement())
+  full_name         String
+  address           String?
+  mobile_no         String?
+  email             String?
+  opening_balance   Decimal?
+  balance_type      BalanceType
+  registered_date   DateTime
+  created_at        DateTime            @default(now())
+  supplier_name     String?             @db.VarChar(150)
+  phone             String?             @db.VarChar(50)
+  updated_at        DateTime?           @default(now()) @db.Timestamptz(6)
   purchase_returns  purchase_returns[]
+  purchases         purchases[]
+  supplier_payments supplier_payments[]
 }
 
 model supplier_payments {
-  id           Int      @id @default(autoincrement())
+  id           Int       @id @default(autoincrement())
   supplier_id  Int
   purchase_id  Int?
   payment_mode String
   amount       Decimal
   remarks      String?
   payment_date DateTime
-
-  supplier suppliers @relation(fields: [supplier_id], references: [id])
+  supplier     suppliers @relation(fields: [supplier_id], references: [id])
 }
 
 model sponsors {
-  id              Int      @id @default(autoincrement())
+  id              Int         @id @default(autoincrement())
   full_name       String
   gender          String?
   address         String?
   mobile_no       String?
   email           String?
   registered_date DateTime
-
-  customers customers[]
+  customers       customers[]
 }
 
 model customers {
-  id              Int         @id @default(autoincrement())
+  id              Int                 @id @default(autoincrement())
   full_name       String
   gender          String?
   address         String?
@@ -158,29 +164,26 @@ model customers {
   opening_balance Decimal?
   balance_type    BalanceType
   registered_date DateTime
-  created_at      DateTime    @default(now())
-
-  sponsor sponsors? @relation(fields: [sponsor_id], references: [id])
-
-  receipts      customer_receipts[]
-  sales         sales[]
-  sales_returns sales_returns[]
+  created_at      DateTime            @default(now())
+  receipts        customer_receipts[]
+  sponsor         sponsors?           @relation(fields: [sponsor_id], references: [id])
+  sales           sales[]
+  sales_returns   sales_returns[]
 }
 
 model customer_receipts {
-  id           Int      @id @default(autoincrement())
+  id           Int       @id @default(autoincrement())
   customer_id  Int
   invoice_no   Int
   payment_mode String
   amount       Decimal
   remarks      String?
   created_at   DateTime
-
-  customer customers @relation(fields: [customer_id], references: [id])
+  customer     customers @relation(fields: [customer_id], references: [id])
 }
 
 model purchases {
-  id                 Int      @id @default(autoincrement())
+  id                 Int                 @id @default(autoincrement())
   transaction_number String
   supplier_id        Int
   purchase_date      DateTime
@@ -191,11 +194,20 @@ model purchases {
   grand_total        Decimal
   paid               Decimal
   rest               Decimal
-  created_at         DateTime @default(now())
-
-  supplier suppliers @relation(fields: [supplier_id], references: [id])
-
-  purchase_items purchase_items[]
+  created_at         DateTime            @default(now())
+  purchase_code      String?             @db.VarChar(120)
+  warehouse_id       Int?
+  order_tax          Decimal?            @default(0) @db.Decimal(18, 2)
+  discount_type      String?             @default("fixed") @db.VarChar(20)
+  shipping           Decimal?            @default(0) @db.Decimal(18, 2)
+  total_amount       Decimal?            @default(0) @db.Decimal(18, 2)
+  notes              String?
+  created_by         Int?
+  updated_at         DateTime?           @default(now()) @db.Timestamptz(6)
+  purchase_items     purchase_items[]
+  purchase_payments  purchase_payments[]
+  warehouse          warehouses?         @relation(fields: [warehouse_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_purchases_warehouse_id")
+  supplier           suppliers           @relation(fields: [supplier_id], references: [id])
 }
 
 model purchase_items {
@@ -207,129 +219,170 @@ model purchase_items {
   quantity    Int
   price       Decimal
   amount      Decimal
-
-  purchase purchases @relation(fields: [purchase_id], references: [id])
-  product  products  @relation(fields: [product_id], references: [id])
+  unit_cost   Decimal?  @db.Decimal(18, 2)
+  discount    Decimal?  @default(0) @db.Decimal(18, 2)
+  tax         Decimal?  @default(0) @db.Decimal(18, 2)
+  subtotal    Decimal?  @db.Decimal(18, 2)
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime? @default(now()) @db.Timestamptz(6)
+  product     products  @relation(fields: [product_id], references: [id])
+  purchase    purchases @relation(fields: [purchase_id], references: [id])
 }
 
 model purchase_returns {
-  id             Int      @id @default(autoincrement())
-  transaction_no String
-  purchase_id    Int
-  supplier_id    Int
-  return_type    String
-  return_date    DateTime
-  total_amount   Decimal
-
-  supplier suppliers @relation(fields: [supplier_id], references: [id])
-
+  id                    Int                     @id @default(autoincrement())
+  transaction_no        String
+  purchase_id           Int
+  supplier_id           Int
+  return_type           String
+  return_date           DateTime
+  total_amount          Decimal
   purchase_return_items purchase_return_items[]
+  supplier              suppliers               @relation(fields: [supplier_id], references: [id])
 }
 
 model purchase_return_items {
-  id                 Int     @id @default(autoincrement())
+  id                 Int              @id @default(autoincrement())
   purchase_return_id Int
   product_id         Int
   quantity           Int
   amount             Decimal
-
-  purchase_return purchase_returns @relation(fields: [purchase_return_id], references: [id])
-  product         products         @relation(fields: [product_id], references: [id])
+  product            products         @relation(fields: [product_id], references: [id])
+  purchase_return    purchase_returns @relation(fields: [purchase_return_id], references: [id])
 }
 
 model sales {
-  id           Int      @id @default(autoincrement())
-  invoice_no   String
-  customer_id  Int
-  invoice_date DateTime
-  total        Decimal
-  discount     Decimal
-  grand_total  Decimal
-  paid         Decimal
-  rest         Decimal
-  created_at   DateTime @default(now())
+  id            Int             @id @default(autoincrement())
+  invoice_no    String
+  customer_id   Int
+  invoice_date  DateTime
+  total         Decimal
+  discount      Decimal
+  grand_total   Decimal
+  paid          Decimal
+  rest          Decimal
+  created_at    DateTime        @default(now())
+  warehouse_id  Int?
+  order_tax     Decimal?        @default(0) @db.Decimal(18, 2)
+  discount_type String?         @default("fixed") @db.VarChar(20)
+  shipping      Decimal?        @default(0) @db.Decimal(18, 2)
+  total_amount  Decimal?        @default(0) @db.Decimal(18, 2)
+  payment_mode  String?         @default("cash") @db.VarChar(40)
+  notes         String?
+  updated_at    DateTime?       @default(now()) @db.Timestamptz(6)
+  sale_items    sale_items[]
+  sale_payments sale_payments[]
+  warehouse     warehouses?     @relation(fields: [warehouse_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_sales_warehouse_id")
+  customer      customers       @relation(fields: [customer_id], references: [id])
+}
 
-  customer customers @relation(fields: [customer_id], references: [id])
+model inventory {
+  id               Int        @id @default(autoincrement())
+  product_id       Int
+  warehouse_id     Int
+  quantity_on_hand Int        @default(0)
+  created_at       DateTime   @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime   @default(now()) @updatedAt @db.Timestamptz(6)
+  product          products   @relation(fields: [product_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  warehouse        warehouses @relation(fields: [warehouse_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  sale_items sale_items[]
+  @@unique([product_id, warehouse_id], map: "uq_inventory_product_warehouse")
+  @@index([product_id], map: "idx_inventory_product_id")
+  @@index([warehouse_id], map: "idx_inventory_warehouse_id")
+}
+
+model stock_movements {
+  id             Int                  @id @default(autoincrement())
+  product_id     Int
+  warehouse_id   Int
+  type           stock_movement_type
+  quantity       Int
+  reference_type stock_reference_type
+  reference_id   Int?
+  note           String?
+  created_at     DateTime             @default(now()) @db.Timestamptz(6)
+  product        products             @relation(fields: [product_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  warehouse      warehouses           @relation(fields: [warehouse_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([created_at(sort: Desc)], map: "idx_stock_movements_created_at")
+  @@index([product_id, warehouse_id], map: "idx_stock_movements_product_warehouse")
+  @@index([reference_type, reference_id], map: "idx_stock_movements_reference")
 }
 
 model sale_items {
-  id         Int     @id @default(autoincrement())
+  id         Int       @id @default(autoincrement())
   sale_id    Int
   product_id Int
   quantity   Int
   price      Decimal
   total      Decimal
-
-  sale    sales    @relation(fields: [sale_id], references: [id])
-  product products @relation(fields: [product_id], references: [id])
+  unit_price Decimal?  @db.Decimal(18, 2)
+  discount   Decimal?  @default(0) @db.Decimal(18, 2)
+  tax        Decimal?  @default(0) @db.Decimal(18, 2)
+  subtotal   Decimal?  @db.Decimal(18, 2)
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at DateTime? @default(now()) @db.Timestamptz(6)
+  product    products  @relation(fields: [product_id], references: [id])
+  sale       sales     @relation(fields: [sale_id], references: [id])
 }
 
 model sales_returns {
-  id             Int      @id @default(autoincrement())
-  transaction_no String
-  sale_id        Int
-  customer_id    Int
-  return_date    DateTime
-  total_amount   Decimal
-
-  customer customers @relation(fields: [customer_id], references: [id])
-
+  id                 Int                  @id @default(autoincrement())
+  transaction_no     String
+  sale_id            Int
+  customer_id        Int
+  return_date        DateTime
+  total_amount       Decimal
   sales_return_items sales_return_items[]
+  customer           customers            @relation(fields: [customer_id], references: [id])
 }
 
 model sales_return_items {
-  id              Int     @id @default(autoincrement())
+  id              Int           @id @default(autoincrement())
   sales_return_id Int
   product_id      Int
   quantity        Int
   amount          Decimal
-
-  sales_return sales_returns @relation(fields: [sales_return_id], references: [id])
-  product      products      @relation(fields: [product_id], references: [id])
+  product         products      @relation(fields: [product_id], references: [id])
+  sales_return    sales_returns @relation(fields: [sales_return_id], references: [id])
 }
 
 model expense_types {
-  id         Int      @id @default(autoincrement())
-  type_name  String
-  created_at DateTime
-
+  id            Int             @id @default(autoincrement())
+  type_name     String
+  created_at    DateTime
   expense_bills expense_bills[]
 }
 
 model expense_bills {
-  id              Int      @id @default(autoincrement())
-  expense_type_id Int
-  invoice_date    DateTime
-  receiver_name   String
-  amount          Decimal
-  remarks         String?
-  created_at      DateTime @default(now())
-
-  expense_type expense_types @relation(fields: [expense_type_id], references: [id])
-
+  id               Int                @id @default(autoincrement())
+  expense_type_id  Int
+  invoice_date     DateTime
+  receiver_name    String
+  amount           Decimal
+  remarks          String?
+  created_at       DateTime           @default(now())
+  expense_type     expense_types      @relation(fields: [expense_type_id], references: [id])
   expense_payments expense_payments[]
 }
 
 model expense_payments {
-  id              Int      @id @default(autoincrement())
+  id              Int           @id @default(autoincrement())
   expense_bill_id Int
   payment_mode    String
   cash            Decimal
   amount          Decimal
   remarks         String?
   payment_date    DateTime
-
-  expense_bill expense_bills @relation(fields: [expense_bill_id], references: [id])
+  expense_bill    expense_bills @relation(fields: [expense_bill_id], references: [id])
 }
 
 model accounts {
   id              Int      @id @default(autoincrement())
   account_name    String
   account_number  String   @unique
-  opening_balance Decimal  @default(0)
-  balance         Decimal  @default(0)
+  opening_balance Decimal  @default(0) @db.Decimal(18, 2)
+  balance         Decimal  @default(0) @db.Decimal(18, 2)
   currency        String   @default("USD")
   remarks         String?
   created_at      DateTime @default(now())
@@ -350,8 +403,7 @@ model stock_adjustments {
   expire_date     DateTime?
   adjustment_type AdjustmentType
   created_at      DateTime       @default(now())
-
-  product products @relation(fields: [product_id], references: [id])
+  product         products       @relation(fields: [product_id], references: [id])
 }
 
 model transaction_closing {
@@ -375,8 +427,7 @@ model report_logs {
   report_name  String
   generated_by Int
   generated_at DateTime @default(now())
-
-  user users @relation(fields: [generated_by], references: [id])
+  user         users    @relation(fields: [generated_by], references: [id])
 }
 
 model audit_logs {
@@ -386,6 +437,91 @@ model audit_logs {
   table_name String
   record_id  Int
   created_at DateTime @default(now())
+  user       users    @relation(fields: [user_id], references: [id])
+}
 
-  user users @relation(fields: [user_id], references: [id])
+model purchase_payments {
+  id           Int       @id @default(autoincrement())
+  purchase_id  Int
+  payment_date DateTime  @default(now()) @db.Timestamptz(6)
+  payment_mode String    @default("cash") @db.VarChar(50)
+  account_name String?   @db.VarChar(120)
+  amount       Decimal   @db.Decimal(18, 2)
+  remarks      String?
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  purchases    purchases @relation(fields: [purchase_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([purchase_id], map: "idx_purchase_payments_purchase_id")
+}
+
+model sale_payments {
+  id           Int      @id @default(autoincrement())
+  sale_id      Int
+  payment_date DateTime @default(now()) @db.Timestamptz(6)
+  payment_mode String   @default("cash") @db.VarChar(40)
+  account_name String?  @db.VarChar(120)
+  amount       Decimal  @db.Decimal(18, 2)
+  remarks      String?
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  sales        sales    @relation(fields: [sale_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model stock_transfers {
+  id                Int      @id @default(autoincrement())
+  transfer_date     DateTime @default(now()) @db.Timestamptz(6)
+  reference_no      String   @unique @db.VarChar(120)
+  from_warehouse_id Int
+  to_warehouse_id   Int
+  total_products    Int      @default(0)
+  grand_total       Decimal  @default(0) @db.Decimal(18, 2)
+  remarks           String?
+  created_at        DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([from_warehouse_id], map: "idx_stock_transfers_from_warehouse")
+  @@index([to_warehouse_id], map: "idx_stock_transfers_to_warehouse")
+  @@index([transfer_date], map: "idx_stock_transfers_transfer_date")
+}
+
+model user_permission_profiles {
+  user_id    Int      @id
+  use_custom Boolean  @default(false)
+  updated_at DateTime @default(now()) @db.Timestamp(6)
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model user_permissions {
+  id            Int         @id @default(autoincrement())
+  user_id       Int
+  permission_id Int
+  granted       Boolean     @default(true)
+  created_at    DateTime    @default(now()) @db.Timestamp(6)
+  permissions   permissions @relation(fields: [permission_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users         users       @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, permission_id])
+}
+
+enum BalanceType {
+  credit
+  debit
+  none
+}
+
+enum AdjustmentType {
+  increase
+  decrease
+}
+
+enum stock_movement_type {
+  IN
+  OUT
+  ADJUSTMENT
+}
+
+enum stock_reference_type {
+  PURCHASE
+  SALE
+  SALES_RETURN
+  PURCHASE_RETURN
+  ADJUSTMENT
 }

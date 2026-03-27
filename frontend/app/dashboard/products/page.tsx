@@ -164,7 +164,8 @@ export default function ProductsPage() {
     return `${API_ORIGIN}/${imagePath}`
   }, [])
 
-  const validateProductForm = React.useCallback((form: ProductForm): string | null => {
+  const validateProductForm = React.useCallback((form: ProductForm, options?: { requireExpireDate?: boolean }): string | null => {
+    const requireExpireDate = options?.requireExpireDate ?? true
     if (!form.product_name.trim() || form.product_name.trim().length < 2) {
       return "Product name must be at least 2 characters."
     }
@@ -197,7 +198,7 @@ export default function ProductsPage() {
       return "Sale cost must be a non-negative number."
     }
 
-    if (form.has_expire_date === "yes" && !form.expire_date) {
+    if (requireExpireDate && form.has_expire_date === "yes" && !form.expire_date) {
       return "Expire date is required when 'Has Expire Date' is Yes."
     }
 
@@ -364,7 +365,7 @@ export default function ProductsPage() {
       return
     }
 
-    const validationError = validateProductForm(editForm)
+    const validationError = validateProductForm(editForm, { requireExpireDate: false })
     if (validationError) {
       appNotify.failed("Validation", validationError)
       return
@@ -853,40 +854,6 @@ export default function ProductsPage() {
                     Uploaded image preview
                   </a>
                 ) : null}
-              </div>
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <label htmlFor="edit-expire-flag" className="text-sm font-medium">Has Expire Date</label>
-                <Select
-                  value={editForm.has_expire_date}
-                  onValueChange={(value) =>
-                    setEditForm((prev) => ({
-                      ...prev,
-                      has_expire_date: value === "yes" ? "yes" : "no",
-                      expire_date: value === "yes" ? prev.expire_date : "",
-                    }))
-                  }
-                >
-                  <SelectTrigger id="edit-expire-flag" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="yes">Yes</SelectItem>
-                    <SelectItem value="no">No</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <label htmlFor="edit-expire-date" className="text-sm font-medium">Expire Date</label>
-                <Input
-                  id="edit-expire-date"
-                  type="date"
-                  value={editForm.expire_date}
-                  onChange={(e) => setEditForm((prev) => ({ ...prev, expire_date: e.target.value }))}
-                  disabled={editForm.has_expire_date !== "yes"}
-                />
               </div>
             </div>
 
